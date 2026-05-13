@@ -42,7 +42,7 @@ func (e *OpenAICompatExecutor) PrepareRequest(req *http.Request, auth *cliproxya
 	if req == nil {
 		return nil
 	}
-	_, apiKey := e.resolveCredentials(auth)
+	_, apiKey := e.resolveCredentials(req.Context(), auth)
 	if strings.TrimSpace(apiKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -76,7 +76,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	baseURL, apiKey := e.resolveCredentials(auth)
+	baseURL, apiKey := e.resolveCredentials(ctx, auth)
 	if baseURL == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return
@@ -185,7 +185,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	baseURL, apiKey := e.resolveCredentials(auth)
+	baseURL, apiKey := e.resolveCredentials(ctx, auth)
 	if baseURL == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return nil, err
@@ -380,7 +380,7 @@ func (e *OpenAICompatExecutor) Refresh(ctx context.Context, auth *cliproxyauth.A
 	return auth, nil
 }
 
-func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (baseURL, apiKey string) {
+func (e *OpenAICompatExecutor) resolveCredentials(ctx context.Context, auth *cliproxyauth.Auth) (baseURL, apiKey string) {
 	if auth == nil {
 		return "", ""
 	}
@@ -388,6 +388,8 @@ func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (base
 		baseURL = strings.TrimSpace(auth.Attributes["base_url"])
 		apiKey = strings.TrimSpace(auth.Attributes["api_key"])
 	}
+	// Support API key passthrough
+	apiKey = helps.ResolveAPIKeyWithPassthrough(ctx, apiKey)
 	return
 }
 

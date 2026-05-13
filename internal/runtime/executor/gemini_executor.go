@@ -62,7 +62,7 @@ func (e *GeminiExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 	if req == nil {
 		return nil
 	}
-	apiKey, bearer := geminiCreds(auth)
+	apiKey, bearer := geminiCreds(req.Context(), auth)
 	if apiKey != "" {
 		req.Header.Set("x-goog-api-key", apiKey)
 		req.Header.Del("Authorization")
@@ -109,7 +109,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, bearer := geminiCreds(auth)
+	apiKey, bearer := geminiCreds(ctx, auth)
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -218,7 +218,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, bearer := geminiCreds(auth)
+	apiKey, bearer := geminiCreds(ctx, auth)
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -355,7 +355,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, bearer := geminiCreds(auth)
+	apiKey, bearer := geminiCreds(ctx, auth)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini")
@@ -444,7 +444,7 @@ func (e *GeminiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 	return auth, nil
 }
 
-func geminiCreds(a *cliproxyauth.Auth) (apiKey, bearer string) {
+func geminiCreds(ctx context.Context, a *cliproxyauth.Auth) (apiKey, bearer string) {
 	if a == nil {
 		return "", ""
 	}
@@ -464,6 +464,8 @@ func geminiCreds(a *cliproxyauth.Auth) (apiKey, bearer string) {
 			}
 		}
 	}
+	// Support API key passthrough
+	apiKey = helps.ResolveAPIKeyWithPassthrough(ctx, apiKey)
 	return
 }
 

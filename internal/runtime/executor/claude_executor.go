@@ -90,7 +90,7 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 	if req == nil {
 		return nil
 	}
-	apiKey, _ := claudeCreds(auth)
+	apiKey, _ := claudeCreds(req.Context(), auth)
 	if strings.TrimSpace(apiKey) == "" {
 		return nil
 	}
@@ -133,7 +133,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, baseURL := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(ctx, auth)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
@@ -313,7 +313,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, baseURL := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(ctx, auth)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
@@ -583,7 +583,7 @@ func validateClaudeStreamingResponse(data []byte) error {
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, baseURL := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(ctx, auth)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
@@ -1026,7 +1026,7 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	}
 }
 
-func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+func claudeCreds(ctx context.Context, a *cliproxyauth.Auth) (apiKey, baseURL string) {
 	if a == nil {
 		return "", ""
 	}
@@ -1039,6 +1039,8 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 			apiKey = v
 		}
 	}
+	// Support API key passthrough
+	apiKey = helps.ResolveAPIKeyWithPassthrough(ctx, apiKey)
 	return
 }
 
