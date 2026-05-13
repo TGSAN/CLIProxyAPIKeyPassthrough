@@ -10,45 +10,46 @@ import (
 )
 
 // TestMarkResult_APIKeyPassthrough_AuthErrors verifies that when using API_KEY_PASSTHROUGH,
-// authentication errors (401, 402, 403) do not mark the auth as unavailable, since these
-// errors are caused by the user's API key, not the server's credential.
+// all errors do not mark the auth as unavailable, since these errors are caused by the
+// user's API key, not the server's credential.
 func TestMarkResult_APIKeyPassthrough_AuthErrors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name       string
 		statusCode int
-		shouldMark bool // whether auth should be marked unavailable
 	}{
 		{
 			name:       "401 unauthorized with passthrough should not mark unavailable",
 			statusCode: http.StatusUnauthorized,
-			shouldMark: false,
 		},
 		{
 			name:       "402 payment required with passthrough should not mark unavailable",
 			statusCode: http.StatusPaymentRequired,
-			shouldMark: false,
 		},
 		{
 			name:       "403 forbidden with passthrough should not mark unavailable",
 			statusCode: http.StatusForbidden,
-			shouldMark: false,
 		},
 		{
-			name:       "404 not found with passthrough should still mark unavailable",
+			name:       "404 not found with passthrough should not mark unavailable",
 			statusCode: http.StatusNotFound,
-			shouldMark: true,
 		},
 		{
-			name:       "429 rate limit with passthrough should still mark unavailable",
+			name:       "429 rate limit with passthrough should not mark unavailable",
 			statusCode: http.StatusTooManyRequests,
-			shouldMark: true,
 		},
 		{
-			name:       "500 server error with passthrough should still mark unavailable",
+			name:       "500 server error with passthrough should not mark unavailable",
 			statusCode: http.StatusInternalServerError,
-			shouldMark: true,
+		},
+		{
+			name:       "502 bad gateway with passthrough should not mark unavailable",
+			statusCode: http.StatusBadGateway,
+		},
+		{
+			name:       "503 service unavailable with passthrough should not mark unavailable",
+			statusCode: http.StatusServiceUnavailable,
 		},
 	}
 
@@ -85,23 +86,17 @@ func TestMarkResult_APIKeyPassthrough_AuthErrors(t *testing.T) {
 
 			manager.MarkResult(ctx, result)
 
-			// Verify the auth state
+			// Verify the auth state - with passthrough, should NEVER mark unavailable
 			state, ok := manager.auths[auth.ID].ModelStates[model]
 			if !ok {
 				t.Fatalf("expected model state for %s to exist", model)
 			}
 
-			if tt.shouldMark {
-				if !state.Unavailable {
-					t.Errorf("expected state.Unavailable = true for status %d, got false", tt.statusCode)
-				}
-			} else {
-				if state.Unavailable {
-					t.Errorf("expected state.Unavailable = false for status %d with passthrough, got true", tt.statusCode)
-				}
-				if !state.NextRetryAfter.IsZero() {
-					t.Errorf("expected state.NextRetryAfter to be zero for status %d with passthrough, got %v", tt.statusCode, state.NextRetryAfter)
-				}
+			if state.Unavailable {
+				t.Errorf("expected state.Unavailable = false for status %d with passthrough, got true", tt.statusCode)
+			}
+			if !state.NextRetryAfter.IsZero() {
+				t.Errorf("expected state.NextRetryAfter to be zero for status %d with passthrough, got %v", tt.statusCode, state.NextRetryAfter)
 			}
 		})
 	}
