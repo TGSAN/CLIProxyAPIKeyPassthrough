@@ -43,10 +43,25 @@ remote-management:
 auth-dir: "~/.cli-proxy-api"
 
 # API keys for authentication
+# Note: When using API key passthrough (see below), this can be left empty
 api-keys:
   - "your-api-key-1"
   - "your-api-key-2"
   - "your-api-key-3"
+
+# API Key Passthrough Feature:
+# Set api-key to "{{API_KEY_PASSTHROUGH}}" in provider configurations (claude-api-key,
+# codex-api-key, gemini-api-key, openai-compatibility-api-key, etc.) to use the client's
+# API key (from the Authorization header) as the upstream API key.
+# When using passthrough, the api-keys array above can be empty, as authentication
+# is done by the upstream provider directly.
+# Example:
+# claude-api-key:
+#   - base-url: "https://api.anthropic.com"
+#     api-key: "{{API_KEY_PASSTHROUGH}}"
+#     models:
+#       - name: "claude-sonnet-4-5-20250929"
+#         alias: "claude-sonnet-4.5"
 
 # Enable debug logging
 debug: false
