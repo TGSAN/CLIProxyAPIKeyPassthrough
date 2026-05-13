@@ -4,6 +4,14 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+const (
+	// APIKeyPassthroughPlaceholder is the magic string that triggers API key passthrough.
+	// When this value is set as the api-key in provider configurations (claude-api-key,
+	// codex-api-key, etc.), the server will use the client's API key (from the Authorization
+	// header) as the upstream API key instead.
+	APIKeyPassthroughPlaceholder = "{{API_KEY_PASSTHROUGH}}"
+)
+
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
