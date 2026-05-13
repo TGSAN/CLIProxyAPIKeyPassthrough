@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -45,7 +46,7 @@ func resolveClaudeKeyConfig(cfg *config.Config, auth *cliproxyauth.Auth) *config
 		return nil
 	}
 
-	apiKey, baseURL := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(context.Background(), auth)
 	if apiKey == "" {
 		return nil
 	}
