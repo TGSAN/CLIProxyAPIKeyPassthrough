@@ -2177,8 +2177,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			if result.Model != "" {
 				if !isRequestScopedNotFoundResultError(result.Error) {
 					disableCooling := quotaCooldownDisabledForAuth(auth)
+					isPassthrough := authUsesAPIKeyPassthrough(auth)
+					statusCode := statusCodeFromResult(result.Error)
+
+					// When using API_KEY_PASSTHROUGH, authentication/payment errors (401, 402, 403) are caused
+					// by the user's API key, not the server's credential. Don't mark unavailable or suspend
+					// to avoid blocking all users on a shared server.
+					isAuthErrorWithPassthrough := isPassthrough && (statusCode == 401 || statusCode == 402 || statusCode == 403)
+
 					state := ensureModelState(auth, result.Model)
-					state.Unavailable = true
+					if !isAuthErrorWithPassthrough {
+						state.Unavailable = true
+					}
 					state.Status = StatusError
 					state.UpdatedAt = now
 					if result.Error != nil {
@@ -2188,7 +2198,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						auth.StatusMessage = result.Error.Message
 					}
 
-					statusCode := statusCodeFromResult(result.Error)
 					if isModelSupportResultError(result.Error) {
 						next := now.Add(12 * time.Hour)
 						state.NextRetryAfter = next
@@ -2197,7 +2206,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					} else {
 						switch statusCode {
 						case 401:
-							if disableCooling {
+							// When using API_KEY_PASSTHROUGH, authentication errors are caused by the user's API key,
+							// not the server's credential. Don't mark the auth as unavailable to avoid blocking all users.
+							if isPassthrough {
+								state.NextRetryAfter = time.Time{}
+							} else if disableCooling {
 								state.NextRetryAfter = time.Time{}
 							} else {
 								next := now.Add(30 * time.Minute)
@@ -2206,7 +2219,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								shouldSuspendModel = true
 							}
 						case 402, 403:
-							if disableCooling {
+							// When using API_KEY_PASSTHROUGH, payment/permission errors are caused by the user's API key,
+							// not the server's credential. Don't mark the auth as unavailable to avoid blocking all users.
+							if isPassthrough {
+								state.NextRetryAfter = time.Time{}
+							} else if disableCooling {
 								state.NextRetryAfter = time.Time{}
 							} else {
 								next := now.Add(30 * time.Minute)
@@ -2502,6 +2519,17 @@ func hasUnauthorizedAuthFailure(auth *Auth) bool {
 		return false
 	}
 	return auth.LastError.StatusCode() == http.StatusUnauthorized || strings.EqualFold(auth.LastError.Code, "unauthorized")
+}
+
+// authUsesAPIKeyPassthrough checks if the auth is configured to use API_KEY_PASSTHROUGH placeholder.
+// When using passthrough, authentication errors are caused by the user's API key, not the server's credential,
+// so the auth should not be marked as unavailable.
+func authUsesAPIKeyPassthrough(auth *Auth) bool {
+	if auth == nil || auth.Attributes == nil {
+		return false
+	}
+	apiKey := strings.TrimSpace(auth.Attributes["api_key"])
+	return apiKey == internalconfig.APIKeyPassthroughPlaceholder
 }
 
 func refreshErrorFromError(err error) *Error {
