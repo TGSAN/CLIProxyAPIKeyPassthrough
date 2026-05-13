@@ -1350,11 +1350,58 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 
 // (management handlers moved to internal/api/handlers/management)
 
+// extractAPIKeyFromRequest extracts the API key from the request headers or query parameters.
+// This is used to populate the userApiKey context value for API key passthrough functionality.
+func extractAPIKeyFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+
+	// Try Authorization header (Bearer token)
+	authHeader := r.Header.Get("Authorization")
+	if authHeader != "" {
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+			return strings.TrimSpace(parts[1])
+		}
+		// If not Bearer, return the whole header value
+		return strings.TrimSpace(authHeader)
+	}
+
+	// Try X-Goog-Api-Key header (Google)
+	if key := r.Header.Get("X-Goog-Api-Key"); key != "" {
+		return strings.TrimSpace(key)
+	}
+
+	// Try X-Api-Key header (Anthropic)
+	if key := r.Header.Get("X-Api-Key"); key != "" {
+		return strings.TrimSpace(key)
+	}
+
+	// Try query parameters
+	if r.URL != nil {
+		if key := r.URL.Query().Get("key"); key != "" {
+			return strings.TrimSpace(key)
+		}
+		if key := r.URL.Query().Get("auth_token"); key != "" {
+			return strings.TrimSpace(key)
+		}
+	}
+
+	return ""
+}
+
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
 // using the configured authentication providers. When no providers are available,
 // it allows all requests (legacy behaviour).
 func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Always extract the client's API key for passthrough functionality,
+		// regardless of authentication result
+		if clientAPIKey := extractAPIKeyFromRequest(c.Request); clientAPIKey != "" {
+			c.Set("userApiKey", clientAPIKey)
+		}
+
 		if manager == nil {
 			c.Next()
 			return
@@ -1363,6 +1410,7 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		result, err := manager.Authenticate(c.Request.Context(), c.Request)
 		if err == nil {
 			if result != nil {
+				// Update userApiKey with the validated principal from authentication
 				c.Set("userApiKey", result.Principal)
 				c.Set("accessProvider", result.Provider)
 				if len(result.Metadata) > 0 {
