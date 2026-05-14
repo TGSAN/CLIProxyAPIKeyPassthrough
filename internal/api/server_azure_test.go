@@ -125,6 +125,29 @@ func TestAzureV1Routes(t *testing.T) {
 
 		t.Logf("Azure /openai/v1/models route correctly handled request with status %d", rr.Code)
 	})
+
+	t.Run("AzureV1Responses", func(t *testing.T) {
+		requestBody := map[string]interface{}{
+			"model": "gpt-4",
+			"messages": []map[string]string{
+				{"role": "user", "content": "Hello"},
+			},
+		}
+		body, _ := json.Marshal(requestBody)
+
+		req := httptest.NewRequest(http.MethodPost, "/openai/v1/responses", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("Azure /openai/v1/responses route not found: got status %d; body=%s", rr.Code, rr.Body.String())
+		}
+
+		t.Logf("Azure /openai/v1/responses route correctly handled request with status %d", rr.Code)
+	})
 }
 
 func TestAzureDeploymentMiddleware(t *testing.T) {

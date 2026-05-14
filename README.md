@@ -73,7 +73,9 @@ POST /openai/deployments/{deployment-id}/embeddings?api-version=2024-02-01
 POST /openai/v1/chat/completions
 POST /openai/v1/completions
 POST /openai/v1/embeddings
+POST /openai/v1/responses
 GET  /openai/v1/models
+GET  /openai/v1/responses
 ```
 
 The `deployment-id` in the URL is automatically mapped to the `model` parameter for the deployment-style endpoints, allowing seamless compatibility with Azure OpenAI client libraries.

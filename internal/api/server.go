@@ -486,6 +486,9 @@ func (s *Server) setupRoutes() {
 		azureV1.POST("/images/generations", openaiHandlers.ImagesGenerations)
 		azureV1.POST("/images/edits", openaiHandlers.ImagesEdits)
 		azureV1.POST("/embeddings", openaiHandlers.Completions)
+		azureV1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
+		azureV1.POST("/responses", openaiResponsesHandlers.Responses)
+		azureV1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 	}
 
 	// Root endpoint
