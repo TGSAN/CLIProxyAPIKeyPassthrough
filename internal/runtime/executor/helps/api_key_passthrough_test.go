@@ -25,13 +25,25 @@ func TestResolveAPIKeyWithPassthrough(t *testing.T) {
 			name:             "passthrough without user key",
 			configuredAPIKey: config.APIKeyPassthroughPlaceholder,
 			userAPIKey:       "",
-			wantAPIKey:       "",
+			wantAPIKey:       config.APIKeyPassthroughPlaceholder, // Should return placeholder when no user key
 		},
 		{
 			name:             "normal API key (not passthrough)",
 			configuredAPIKey: "sk-ant-configured-key-67890",
 			userAPIKey:       "sk-ant-real-client-key-12345",
 			wantAPIKey:       "sk-ant-configured-key-67890",
+		},
+		{
+			name:             "empty configured key with user key (Azure scenario)",
+			configuredAPIKey: "",
+			userAPIKey:       "sk-client-azure-key-99999",
+			wantAPIKey:       "sk-client-azure-key-99999", // NEW: Should passthrough when configured is empty
+		},
+		{
+			name:             "empty configured key without user key",
+			configuredAPIKey: "",
+			userAPIKey:       "",
+			wantAPIKey:       "", // Should return empty when both are empty
 		},
 	}
 
