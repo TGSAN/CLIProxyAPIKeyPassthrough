@@ -68,9 +68,17 @@ CLIProxyAPI now supports Azure OpenAI API-compatible endpoints, making it easy t
 POST /openai/deployments/{deployment-id}/chat/completions?api-version=2024-02-01
 POST /openai/deployments/{deployment-id}/completions?api-version=2024-02-01
 POST /openai/deployments/{deployment-id}/embeddings?api-version=2024-02-01
+
+# Standard OpenAI paths with /openai prefix (when azure_endpoint includes /openai)
+POST /openai/v1/chat/completions
+POST /openai/v1/completions
+POST /openai/v1/embeddings
+POST /openai/v1/responses
+GET  /openai/v1/models
+GET  /openai/v1/responses
 ```
 
-The `deployment-id` in the URL is automatically mapped to the `model` parameter, allowing seamless compatibility with Azure OpenAI client libraries.
+The `deployment-id` in the URL is automatically mapped to the `model` parameter for the deployment-style endpoints, allowing seamless compatibility with Azure OpenAI client libraries.
 
 **Example configuration for Azure OpenAI SDK:**
 ```python
