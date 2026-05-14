@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	sdkAccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 )
 
 func TestExtractAPIKeyFromRequest(t *testing.T) {
@@ -156,4 +158,68 @@ func TestAuthMiddleware_SetsUserAPIKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuthMiddleware_PreservesClientAPIKeyForPassthrough tests that when authentication
+// succeeds, the middleware should NOT overwrite the client's original API key.
+// This is critical for API key passthrough mode to work correctly.
+func TestAuthMiddleware_PreservesClientAPIKeyForPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Create a real access manager with a mock provider
+	manager := sdkAccess.NewManager()
+	mockProvider := &mockProvider{
+		authenticateFunc: func(ctx context.Context, req *http.Request) (*sdkAccess.Result, *sdkAccess.AuthError) {
+			// Simulate successful authentication with a different principal
+			return &sdkAccess.Result{
+				Principal: "authenticated-principal-different-from-client-key",
+				Provider:  "test-provider",
+			}, nil
+		},
+	}
+	manager.SetProviders([]sdkAccess.Provider{mockProvider})
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	clientAPIKey := "sk-client-original-key-12345"
+	req.Header.Set("Authorization", "Bearer "+clientAPIKey)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	middleware := AuthMiddleware(manager)
+	middleware(c)
+
+	// The userApiKey should still be the client's original API key,
+	// NOT the authentication principal
+	userAPIKey, exists := c.Get("userApiKey")
+	if !exists {
+		t.Fatalf("Expected userApiKey to be set")
+	}
+
+	if userAPIKey.(string) != clientAPIKey {
+		t.Errorf("userApiKey = %v, want %v (client's original key should be preserved for passthrough)",
+			userAPIKey, clientAPIKey)
+	}
+
+	// Verify authentication succeeded (request not aborted)
+	if c.IsAborted() {
+		t.Errorf("Request should not be aborted when authentication succeeds")
+	}
+}
+
+// Mock provider for testing
+type mockProvider struct {
+	authenticateFunc func(ctx context.Context, req *http.Request) (*sdkAccess.Result, *sdkAccess.AuthError)
+}
+
+func (m *mockProvider) Authenticate(ctx context.Context, req *http.Request) (*sdkAccess.Result, *sdkAccess.AuthError) {
+	if m.authenticateFunc != nil {
+		return m.authenticateFunc(ctx, req)
+	}
+	return nil, sdkAccess.NewInvalidCredentialError()
+}
+
+func (m *mockProvider) Identifier() string {
+	return "mock-provider"
 }

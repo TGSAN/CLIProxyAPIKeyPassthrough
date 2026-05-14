@@ -1489,8 +1489,9 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		result, err := manager.Authenticate(c.Request.Context(), c.Request)
 		if err == nil {
 			if result != nil {
-				// Update userApiKey with the validated principal from authentication
-				c.Set("userApiKey", result.Principal)
+				// DO NOT overwrite userApiKey - it must remain the client's original key
+				// for API key passthrough mode to work correctly.
+				// Only set additional authentication context.
 				c.Set("accessProvider", result.Provider)
 				if len(result.Metadata) > 0 {
 					c.Set("accessMetadata", result.Metadata)
