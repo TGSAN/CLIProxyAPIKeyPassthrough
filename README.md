@@ -42,6 +42,7 @@ VisionCoder is also offering our users a limited-time <a href="https://coder.vis
 ## Overview
 
 - OpenAI/Gemini/Claude compatible API endpoints for CLI models
+- Azure OpenAI API compatible endpoints for easy migration
 - OpenAI Codex support (GPT models) via OAuth login
 - Claude Code support via OAuth login
 - Amp CLI and IDE extensions support with provider routing
@@ -57,6 +58,36 @@ VisionCoder is also offering our users a limited-time <a href="https://coder.vis
 - OpenAI Codex multi-account load balancing
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
+
+## Azure OpenAI API Support
+
+CLIProxyAPI now supports Azure OpenAI API-compatible endpoints, making it easy to migrate applications configured for Azure OpenAI to use this proxy without code changes:
+
+**Azure-style endpoints:**
+```
+POST /openai/deployments/{deployment-id}/chat/completions?api-version=2024-02-01
+POST /openai/deployments/{deployment-id}/completions?api-version=2024-02-01
+POST /openai/deployments/{deployment-id}/embeddings?api-version=2024-02-01
+```
+
+The `deployment-id` in the URL is automatically mapped to the `model` parameter, allowing seamless compatibility with Azure OpenAI client libraries.
+
+**Example configuration for Azure OpenAI SDK:**
+```python
+# Python example using openai library
+from openai import AzureOpenAI
+
+client = AzureOpenAI(
+    azure_endpoint="http://localhost:8080",  # CLIProxyAPI server
+    api_key="your-cliproxyapi-key",
+    api_version="2024-02-01"
+)
+
+response = client.chat.completions.create(
+    model="gpt-4",  # deployment-id
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
 
 ## Getting Started
 

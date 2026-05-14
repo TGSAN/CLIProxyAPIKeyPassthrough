@@ -5,12 +5,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -357,6 +359,56 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 	}
 }
 
+// azureDeploymentMiddleware injects the Azure deployment ID into the request body as the model field.
+// Azure OpenAI API uses deployment IDs in the URL path instead of model names in the request body.
+// This middleware reads the request body, adds the deployment ID as the model if not present,
+// and rewrites the request body for downstream handlers.
+func (s *Server) azureDeploymentMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		deploymentID := c.Param("deployment_id")
+		if deploymentID == "" {
+			c.Next()
+			return
+		}
+
+		// Read the original request body
+		bodyBytes, err := c.GetRawData()
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		// Parse JSON body
+		var requestBody map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &requestBody); err != nil {
+			// If not valid JSON, restore body and continue
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			c.Next()
+			return
+		}
+
+		// Inject deployment ID as model if not already present
+		if _, hasModel := requestBody["model"]; !hasModel {
+			requestBody["model"] = deploymentID
+		}
+
+		// Re-serialize the modified body
+		modifiedBody, err := json.Marshal(requestBody)
+		if err != nil {
+			// If marshal fails, restore original body
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			c.Next()
+			return
+		}
+
+		// Replace request body with modified version
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(modifiedBody))
+		c.Request.ContentLength = int64(len(modifiedBody))
+
+		c.Next()
+	}
+}
+
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
@@ -410,6 +462,18 @@ func (s *Server) setupRoutes() {
 		v1beta.GET("/models", geminiHandlers.GeminiModels)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
 		v1beta.GET("/models/*action", geminiHandlers.GeminiGetHandler)
+	}
+
+	// Azure OpenAI compatible API routes
+	// Azure uses the format: /openai/deployments/{deployment-id}/chat/completions?api-version=xxx
+	// The deployment-id is mapped to the model parameter for compatibility
+	azureOpenAI := s.engine.Group("/openai/deployments")
+	azureOpenAI.Use(AuthMiddleware(s.accessManager))
+	azureOpenAI.Use(s.azureDeploymentMiddleware())
+	{
+		azureOpenAI.POST("/:deployment_id/chat/completions", openaiHandlers.ChatCompletions)
+		azureOpenAI.POST("/:deployment_id/completions", openaiHandlers.Completions)
+		azureOpenAI.POST("/:deployment_id/embeddings", openaiHandlers.Completions)
 	}
 
 	// Root endpoint
