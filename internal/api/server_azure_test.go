@@ -85,6 +85,48 @@ func TestAzureOpenAIRoutes(t *testing.T) {
 	})
 }
 
+func TestAzureV1Routes(t *testing.T) {
+	server := newTestServer(t)
+
+	t.Run("AzureV1ChatCompletions", func(t *testing.T) {
+		requestBody := map[string]interface{}{
+			"model": "gpt-4",
+			"messages": []map[string]string{
+				{"role": "user", "content": "Hello"},
+			},
+			"max_tokens": 100,
+		}
+		body, _ := json.Marshal(requestBody)
+
+		req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("Azure /openai/v1 route not found: got status %d, want non-404; body=%s", rr.Code, rr.Body.String())
+		}
+
+		t.Logf("Azure /openai/v1 route correctly handled request with status %d", rr.Code)
+	})
+
+	t.Run("AzureV1Models", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("Azure /openai/v1/models route not found: got status %d; body=%s", rr.Code, rr.Body.String())
+		}
+
+		t.Logf("Azure /openai/v1/models route correctly handled request with status %d", rr.Code)
+	})
+}
+
 func TestAzureDeploymentMiddleware(t *testing.T) {
 	server := newTestServer(t)
 

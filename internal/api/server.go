@@ -476,6 +476,18 @@ func (s *Server) setupRoutes() {
 		azureOpenAI.POST("/:deployment_id/embeddings", openaiHandlers.Completions)
 	}
 
+	// Azure OpenAI SDK also uses /openai/v1/* when configured with azure_endpoint that includes /openai
+	azureV1 := s.engine.Group("/openai/v1")
+	azureV1.Use(AuthMiddleware(s.accessManager))
+	{
+		azureV1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+		azureV1.POST("/chat/completions", openaiHandlers.ChatCompletions)
+		azureV1.POST("/completions", openaiHandlers.Completions)
+		azureV1.POST("/images/generations", openaiHandlers.ImagesGenerations)
+		azureV1.POST("/images/edits", openaiHandlers.ImagesEdits)
+		azureV1.POST("/embeddings", openaiHandlers.Completions)
+	}
+
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
