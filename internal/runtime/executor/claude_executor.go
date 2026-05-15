@@ -277,7 +277,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
-	if stream {
+	if stream && bytes.HasPrefix(bytes.TrimSpace(data), []byte("data:")) {
 		if errValidate := validateClaudeStreamingResponse(data); errValidate != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errValidate)
 			return resp, errValidate
@@ -303,6 +303,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		data,
 		&param,
 	)
+	if errorMessage := strings.TrimSpace(gjson.GetBytes(out, "error.message").String()); errorMessage != "" {
+		return resp, statusErr{code: http.StatusBadGateway, msg: errorMessage}
+	}
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }

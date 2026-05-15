@@ -1007,6 +1007,38 @@ func TestClaudeExecutor_ExecuteOpenAINonStreamConvertsValidClaudeStream(t *testi
 	}
 }
 
+func TestClaudeExecutor_ExecuteOpenAINonStreamAcceptsClaudeJSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_json","type":"message","model":"claude-3-5-sonnet-20241022","role":"assistant","content":[{"type":"text","text":"ok-json"}],"usage":{"input_tokens":2,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hi"}]}`)
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(resp.Payload, "id").String(); got != "msg_json" {
+		t.Fatalf("response id = %q, want msg_json; payload=%s", got, string(resp.Payload))
+	}
+	if got := gjson.GetBytes(resp.Payload, "choices.0.message.content").String(); got != "ok-json" {
+		t.Fatalf("response content = %q, want ok-json; payload=%s", got, string(resp.Payload))
+	}
+}
+
 func executeOpenAIChatCompletionThroughClaude(t *testing.T, upstreamBody string) (cliproxyexecutor.Response, error) {
 	t.Helper()
 

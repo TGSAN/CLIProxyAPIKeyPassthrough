@@ -239,6 +239,36 @@ func TestAmpProviderModelRoutes(t *testing.T) {
 	}
 }
 
+func TestAnthropicV1Routes(t *testing.T) {
+	server := newTestServer(t)
+
+	t.Run("AnthropicMessages", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{"model":"claude-3-5-sonnet-20241022","max_tokens":64,"messages":[{"role":"user","content":"Hello"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("Anthropic /anthropic/v1/messages route not found: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("AnthropicCountTokens", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages/count_tokens", strings.NewReader(`{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"Hello"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("Anthropic /anthropic/v1/messages/count_tokens route not found: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
 func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 	t.Setenv("WRITABLE_PATH", "")
 	t.Setenv("writable_path", "")

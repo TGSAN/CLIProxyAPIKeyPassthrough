@@ -114,3 +114,25 @@ func TestConvertClaudeResponseToOpenAINonStream_UsageMergesMessageStartUsage(t *
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
 }
+
+func TestConvertClaudeResponseToOpenAINonStream_AcceptsJSONMessageResponse(t *testing.T) {
+	rawJSON := []byte(`{"id":"msg_json","type":"message","model":"claude-3-5-sonnet-20241022","role":"assistant","content":[{"type":"text","text":"ok-json"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`)
+
+	out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
+
+	if got := gjson.GetBytes(out, "id").String(); got != "msg_json" {
+		t.Fatalf("id = %q, want msg_json; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "model").String(); got != "claude-3-5-sonnet-20241022" {
+		t.Fatalf("model = %q, want claude-3-5-sonnet-20241022; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "choices.0.message.content").String(); got != "ok-json" {
+		t.Fatalf("content = %q, want ok-json; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "usage.total_tokens").Int(); got != 3 {
+		t.Fatalf("usage.total_tokens = %d, want 3; payload=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "stop" {
+		t.Fatalf("finish_reason = %q, want stop; payload=%s", got, string(out))
+	}
+}

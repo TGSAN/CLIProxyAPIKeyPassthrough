@@ -313,6 +313,14 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 		chunks = append(chunks, bytes.TrimSpace(line[5:]))
 	}
 
+	if len(chunks) == 0 {
+		root := gjson.ParseBytes(rawJSON)
+		if !root.IsObject() || root.Get("type").String() != "message" {
+			return []byte(`{"error":{"message":"claude executor: upstream returned empty stream response","type":"server_error"}}`)
+		}
+		return convertClaudeJSONMessageToOpenAINonStream(rawJSON)
+	}
+
 	// Base OpenAI non-streaming response template
 	out := []byte(`{"id":"","object":"chat.completion","created":0,"model":"","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`)
 
@@ -464,6 +472,72 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 		}
 	} else {
 		out, _ = sjson.SetBytes(out, "choices.0.finish_reason", mapAnthropicStopReasonToOpenAI(stopReason))
+	}
+
+	return out
+}
+
+func convertClaudeJSONMessageToOpenAINonStream(rawJSON []byte) []byte {
+	root := gjson.ParseBytes(rawJSON)
+	out := []byte(`{"id":"","object":"chat.completion","created":0,"model":"","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`)
+
+	out, _ = sjson.SetBytes(out, "id", root.Get("id").String())
+	out, _ = sjson.SetBytes(out, "model", root.Get("model").String())
+	out, _ = sjson.SetBytes(out, "created", time.Now().Unix())
+
+	contentBlocks := root.Get("content")
+	contentParts := make([]string, 0)
+	reasoningParts := make([]string, 0)
+	toolCallIndex := 0
+
+	if contentBlocks.Exists() && contentBlocks.IsArray() {
+		contentBlocks.ForEach(func(_, block gjson.Result) bool {
+			switch block.Get("type").String() {
+			case "text":
+				contentParts = append(contentParts, block.Get("text").String())
+			case "thinking":
+				if thinking := strings.TrimSpace(block.Get("thinking").String()); thinking != "" {
+					reasoningParts = append(reasoningParts, thinking)
+				}
+			case "tool_use":
+				idPath := fmt.Sprintf("choices.0.message.tool_calls.%d.id", toolCallIndex)
+				typePath := fmt.Sprintf("choices.0.message.tool_calls.%d.type", toolCallIndex)
+				namePath := fmt.Sprintf("choices.0.message.tool_calls.%d.function.name", toolCallIndex)
+				argumentsPath := fmt.Sprintf("choices.0.message.tool_calls.%d.function.arguments", toolCallIndex)
+				out, _ = sjson.SetBytes(out, idPath, block.Get("id").String())
+				out, _ = sjson.SetBytes(out, typePath, "function")
+				out, _ = sjson.SetBytes(out, namePath, block.Get("name").String())
+				input := block.Get("input")
+				if input.Exists() {
+					out, _ = sjson.SetBytes(out, argumentsPath, input.Raw)
+				} else {
+					out, _ = sjson.SetBytes(out, argumentsPath, "{}")
+				}
+				toolCallIndex++
+			}
+			return true
+		})
+	}
+
+	out, _ = sjson.SetBytes(out, "choices.0.message.content", strings.Join(contentParts, ""))
+	if len(reasoningParts) > 0 {
+		out, _ = sjson.SetBytes(out, "choices.0.message.reasoning", strings.Join(reasoningParts, ""))
+	}
+
+	if toolCallIndex > 0 {
+		out, _ = sjson.SetBytes(out, "choices.0.finish_reason", "tool_calls")
+	} else if stopReason := root.Get("stop_reason").String(); stopReason != "" {
+		out, _ = sjson.SetBytes(out, "choices.0.finish_reason", mapAnthropicStopReasonToOpenAI(stopReason))
+	}
+
+	usage := claudeUsageTokens{}
+	usage.Merge(root.Get("usage"))
+	if usage.HasUsage {
+		promptTokens, completionTokens, totalTokens, cachedTokens := usage.OpenAIUsage()
+		out, _ = sjson.SetBytes(out, "usage.prompt_tokens", promptTokens)
+		out, _ = sjson.SetBytes(out, "usage.completion_tokens", completionTokens)
+		out, _ = sjson.SetBytes(out, "usage.total_tokens", totalTokens)
+		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
 	}
 
 	return out

@@ -491,6 +491,15 @@ func (s *Server) setupRoutes() {
 		azureV1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 	}
 
+	// Anthropic-compatible API route aliases.
+	// Some clients target /anthropic/v1/* instead of the root /v1/* Claude endpoints.
+	anthropicV1 := s.engine.Group("/anthropic/v1")
+	anthropicV1.Use(AuthMiddleware(s.accessManager))
+	{
+		anthropicV1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
+		anthropicV1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
+	}
+
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
