@@ -1447,6 +1447,11 @@ func extractAPIKeyFromRequest(r *http.Request) string {
 		return strings.TrimSpace(authHeader)
 	}
 
+	// Try api-key header (Azure OpenAI SDK)
+	if key := r.Header.Get("api-key"); key != "" {
+		return strings.TrimSpace(key)
+	}
+
 	// Try X-Goog-Api-Key header (Google)
 	if key := r.Header.Get("X-Goog-Api-Key"); key != "" {
 		return strings.TrimSpace(key)

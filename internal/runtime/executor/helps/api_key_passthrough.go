@@ -25,16 +25,19 @@ func ResolveAPIKeyWithPassthrough(ctx context.Context, configuredAPIKey string) 
 		// Extract the client's API key from the Gin context
 		ginCtx, ok := ctx.Value("gin").(*gin.Context)
 		if !ok || ginCtx == nil {
-			// If we can't get the Gin context, return the configured key as-is
-			// (empty string if it was empty, or placeholder if it was the placeholder)
-			return configuredAPIKey
+			// CRITICAL: If we can't get the Gin context when passthrough is configured,
+			// return empty string to avoid sending the literal placeholder to upstream.
+			// This will cause authentication to fail, which is appropriate since we
+			// cannot fulfill the passthrough requirement.
+			return ""
 		}
 
 		// Get the user's API key that was set by AuthMiddleware
 		userAPIKey, exists := ginCtx.Get("userApiKey")
 		if !exists {
-			// No user API key was captured, return the configured key
-			return configuredAPIKey
+			// No user API key was captured, return empty to fail auth
+			// (better to fail than to send placeholder literal)
+			return ""
 		}
 
 		// Convert to string and return
@@ -42,8 +45,8 @@ func ResolveAPIKeyWithPassthrough(ctx context.Context, configuredAPIKey string) 
 			return strings.TrimSpace(key)
 		}
 
-		// If the userApiKey wasn't a string, return the configured key
-		return configuredAPIKey
+		// If the userApiKey wasn't a string, return empty
+		return ""
 	}
 
 	// The configured API key is not the passthrough placeholder and not empty,

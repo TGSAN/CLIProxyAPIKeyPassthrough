@@ -22,6 +22,8 @@ type ResponseRewriter struct {
 	originalModel    string
 	isStreaming      bool
 	suppressThinking bool
+	statusCode       int
+	headerWritten    bool
 }
 
 // NewResponseRewriter creates a new response rewriter for model name substitution.
@@ -103,6 +105,27 @@ func (rw *ResponseRewriter) Write(data []byte) (int, error) {
 	return rw.body.Write(data)
 }
 
+func (rw *ResponseRewriter) WriteHeader(statusCode int) {
+	if rw.headerWritten {
+		return
+	}
+
+	contentType := rw.Header().Get("Content-Type")
+	if !rw.isStreaming {
+		rw.isStreaming = strings.Contains(contentType, "text/event-stream") ||
+			strings.Contains(contentType, "stream")
+	}
+
+	if rw.isStreaming {
+		rw.headerWritten = true
+		rw.statusCode = statusCode
+		rw.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
+
+	rw.statusCode = statusCode
+}
+
 func (rw *ResponseRewriter) Flush() {
 	if rw.isStreaming {
 		if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
@@ -115,9 +138,24 @@ func (rw *ResponseRewriter) Flush() {
 		// Update Content-Length to match the rewritten body size, since
 		// signature injection and model name changes alter the payload length.
 		rw.ResponseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(rewritten)))
+		if !rw.headerWritten {
+			statusCode := rw.statusCode
+			if statusCode == 0 {
+				statusCode = http.StatusOK
+			}
+			rw.headerWritten = true
+			rw.ResponseWriter.WriteHeader(statusCode)
+		}
 		if _, err := rw.ResponseWriter.Write(rewritten); err != nil {
 			log.Warnf("amp response rewriter: failed to write rewritten response: %v", err)
 		}
+		return
+	}
+
+	if !rw.headerWritten && rw.statusCode != 0 {
+		rw.headerWritten = true
+		rw.ResponseWriter.WriteHeader(rw.statusCode)
+		rw.ResponseWriter.WriteHeaderNow()
 	}
 }
 

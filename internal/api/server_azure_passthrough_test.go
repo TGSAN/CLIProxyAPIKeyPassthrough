@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -51,11 +54,12 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 	defer upstreamServer.Close()
 
 	clientAPIKey := "client-secret-key-12345"
+	clientAPIKey2 := "client-secret-key-67890"
 
 	// Configure the proxy with API_KEY_PASSTHROUGH
 	cfg := &config.Config{
 		SDKConfig: sdkconfig.SDKConfig{
-			APIKeys: []string{clientAPIKey}, // Allow the client's API key
+			APIKeys: []string{clientAPIKey, clientAPIKey2}, // Allow both client API keys
 		},
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{
@@ -66,11 +70,56 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 						APIKey: config.APIKeyPassthroughPlaceholder, // Use passthrough
 					},
 				},
+				Models: []config.OpenAICompatibilityModel{
+					{
+						Name:  "gpt-4",      // The actual model name sent to upstream
+						Alias: "azure-test", // The model alias clients use to reference this
+					},
+				},
 			},
 		},
 	}
 
 	server := newTestServerWithConfig(t, cfg)
+
+	// Register the OpenAI compat executor for the "azure-test" provider
+	azureExecutor := executor.NewOpenAICompatExecutor("azure-test", cfg)
+	server.handlers.AuthManager.RegisterExecutor(azureExecutor)
+
+	// Register the model in the global registry so it can be found.
+	// The client ID must match the auth ID because the scheduler uses auth ID
+	// to look up supported models via registry.GetModelsForClient(authID).
+	registry.GetGlobalRegistry().RegisterClient(
+		"test-azure-compat-auth",
+		"azure-test", // Provider name (matches the OpenAI compat name)
+		[]*registry.ModelInfo{
+			{
+				ID:      "azure-test",
+				Object:  "model",
+				Created: 1234567890,
+				OwnedBy: "test",
+				Type:    "openai",
+			},
+		},
+	)
+
+	// Manually create Auth entry for the OpenAI compat provider
+	// In production, this would be done by the synthesizer/watcher
+	authEntry := &auth.Auth{
+		ID:       "test-azure-compat-auth",
+		Provider: "azure-test",
+		Label:    "Azure Test",
+		Status:   auth.StatusActive,
+		Attributes: map[string]string{
+			"base_url":     upstreamServer.URL,
+			"api_key":      config.APIKeyPassthroughPlaceholder,
+			"compat_name":  "azure-test",
+			"provider_key": "azure-test",
+		},
+	}
+	if _, err := server.handlers.AuthManager.Register(context.Background(), authEntry); err != nil {
+		t.Fatalf("failed to register auth: %v", err)
+	}
 
 	t.Run("AzureDeploymentEndpoint_PassthroughAPIKey", func(t *testing.T) {
 		capturedAuthHeader = ""

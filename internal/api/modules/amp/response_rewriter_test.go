@@ -1,8 +1,13 @@
 package amp
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestRewriteModelInResponse_TopLevel(t *testing.T) {
@@ -223,6 +228,61 @@ func TestNormalizeAmpToolNames_UnknownToolUntouched(t *testing.T) {
 
 	if string(result) != string(input) {
 		t.Errorf("expected no modification for unknown tool, got %s", string(result))
+	}
+}
+
+func TestResponseRewriterFlush_WritesRewrittenContentLengthBeforeHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	rewriter := NewResponseRewriter(ctx.Writer, "gpt-5.2-codex")
+	rewriter.Header().Set("Content-Type", "application/json")
+	rewriter.WriteHeader(http.StatusAccepted)
+
+	payload := []byte(`{"id":"resp_1","model":"gpt-5.3-codex","output":[]}`)
+	if _, err := rewriter.Write(payload); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+
+	rewriter.Flush()
+
+	result := recorder.Result()
+	defer result.Body.Close()
+
+	if result.StatusCode != http.StatusAccepted {
+		t.Fatalf("status code mismatch: want %d, got %d", http.StatusAccepted, result.StatusCode)
+	}
+
+	expectedBody := `{"id":"resp_1","model":"gpt-5.2-codex","output":[]}`
+	if body := recorder.Body.String(); body != expectedBody {
+		t.Fatalf("body mismatch: want %s, got %s", expectedBody, body)
+	}
+
+	expectedLength := len([]byte(expectedBody))
+	if got := result.Header.Get("Content-Length"); got != fmt.Sprintf("%d", expectedLength) {
+		t.Fatalf("content-length mismatch: want %d, got %s", expectedLength, got)
+	}
+}
+
+func TestResponseRewriterFlush_StatusOnlyWritesHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	rewriter := NewResponseRewriter(ctx.Writer, "gpt-5.2-codex")
+	rewriter.Header().Set("Content-Type", "application/json")
+	rewriter.WriteHeader(http.StatusNoContent)
+	rewriter.Flush()
+
+	result := recorder.Result()
+	defer result.Body.Close()
+
+	if result.StatusCode != http.StatusNoContent {
+		t.Fatalf("status code mismatch: want %d, got %d", http.StatusNoContent, result.StatusCode)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected empty body, got %q", recorder.Body.String())
 	}
 }
 

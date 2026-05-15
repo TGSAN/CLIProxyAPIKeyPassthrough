@@ -142,24 +142,24 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 			// Reconstruct complete gzipped data
 			gzippedData := append(header[:n], rest...)
 
-			// Decompress
+			// Decompress. If the gzip payload is corrupt or truncated, fail the
+			// proxy response instead of forwarding invalid compressed bytes to the
+			// downstream client, which would surface as client-side checksum/EOF errors.
 			gzipReader, err := gzip.NewReader(bytes.NewReader(gzippedData))
 			if err != nil {
-				log.Warnf("amp proxy: gzip header detected but decompress failed: %v", err)
-				// Close original body and return in-memory copy
 				_ = originalBody.Close()
-				resp.Body = io.NopCloser(bytes.NewReader(gzippedData))
-				return nil
+				return fmt.Errorf("amp proxy: gzip header detected but reader creation failed: %w", err)
 			}
 
 			decompressed, err := io.ReadAll(gzipReader)
-			_ = gzipReader.Close()
+			errClose := gzipReader.Close()
 			if err != nil {
-				log.Warnf("amp proxy: gzip decompress error: %v", err)
-				// Close original body and return in-memory copy
 				_ = originalBody.Close()
-				resp.Body = io.NopCloser(bytes.NewReader(gzippedData))
-				return nil
+				return fmt.Errorf("amp proxy: gzip decompress failed: %w", err)
+			}
+			if errClose != nil {
+				_ = originalBody.Close()
+				return fmt.Errorf("amp proxy: gzip checksum validation failed: %w", errClose)
 			}
 
 			// Close original body since we're replacing with in-memory decompressed content

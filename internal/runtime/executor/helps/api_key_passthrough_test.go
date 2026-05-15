@@ -25,7 +25,7 @@ func TestResolveAPIKeyWithPassthrough(t *testing.T) {
 			name:             "passthrough without user key",
 			configuredAPIKey: config.APIKeyPassthroughPlaceholder,
 			userAPIKey:       "",
-			wantAPIKey:       config.APIKeyPassthroughPlaceholder, // Should return placeholder when no user key
+			wantAPIKey:       "", // Should return empty (not placeholder) to avoid sending literal placeholder
 		},
 		{
 			name:             "normal API key (not passthrough)",

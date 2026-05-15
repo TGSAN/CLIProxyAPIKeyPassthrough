@@ -59,7 +59,7 @@ func TestModifyResponse_GzipScenarios(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	goodJSON := []byte(`{"ok":true}`)
+	goodJSON := []byte(`{\"ok\":true}`)
 	good := gzipBytes(goodJSON)
 	truncated := good[:10]
 	corrupted := append([]byte{0x1f, 0x8b}, []byte("notgzip")...)
@@ -71,6 +71,7 @@ func TestModifyResponse_GzipScenarios(t *testing.T) {
 		status   int
 		wantBody []byte
 		wantCE   string
+		wantErr  bool
 	}{
 		{
 			name:     "decompresses_valid_gzip_no_header",
@@ -89,20 +90,18 @@ func TestModifyResponse_GzipScenarios(t *testing.T) {
 			wantCE:   "gzip",
 		},
 		{
-			name:     "passes_truncated_unchanged",
-			header:   http.Header{},
-			body:     truncated,
-			status:   200,
-			wantBody: truncated,
-			wantCE:   "",
+			name:    "rejects_truncated_gzip",
+			header:  http.Header{},
+			body:    truncated,
+			status:  200,
+			wantErr: true,
 		},
 		{
-			name:     "passes_corrupted_unchanged",
-			header:   http.Header{},
-			body:     corrupted,
-			status:   200,
-			wantBody: corrupted,
-			wantCE:   "",
+			name:    "rejects_corrupted_gzip",
+			header:  http.Header{},
+			body:    corrupted,
+			status:  200,
+			wantErr: true,
 		},
 		{
 			name:     "non_gzip_unchanged",
@@ -141,7 +140,14 @@ func TestModifyResponse_GzipScenarios(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := mkResp(tc.status, tc.header, tc.body)
-			if err := proxy.ModifyResponse(resp); err != nil {
+			err := proxy.ModifyResponse(resp)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("ModifyResponse expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("ModifyResponse error: %v", err)
 			}
 			got, err := io.ReadAll(resp.Body)
