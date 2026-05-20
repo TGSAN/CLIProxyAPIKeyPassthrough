@@ -83,6 +83,27 @@ func TestAzureOpenAIRoutes(t *testing.T) {
 
 		t.Logf("Azure embeddings route correctly handled request with status %d", rr.Code)
 	})
+
+	t.Run("AzureResponsesCompact", func(t *testing.T) {
+		deploymentID := "gpt-5.5"
+		requestBody := map[string]interface{}{
+			"input": "Hello",
+		}
+		body, _ := json.Marshal(requestBody)
+
+		req := httptest.NewRequest(http.MethodPost, "/openai/deployments/"+deploymentID+"/responses/compact?api-version=2024-02-01", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("Azure responses/compact route not found: got status %d; body=%s", rr.Code, rr.Body.String())
+		}
+
+		t.Logf("Azure responses/compact route correctly handled request with status %d", rr.Code)
+	})
 }
 
 func TestAzureV1Routes(t *testing.T) {
@@ -179,7 +200,7 @@ func TestAzureDeploymentMiddleware(t *testing.T) {
 		t.Logf("Middleware successfully processed request with status %d", rr.Code)
 	})
 
-	t.Run("PreservesExistingModel", func(t *testing.T) {
+	t.Run("OverridesExistingModel", func(t *testing.T) {
 		deploymentID := "deployment-id"
 		// Request body WITH explicit model field
 		requestBody := map[string]interface{}{
@@ -197,11 +218,34 @@ func TestAzureDeploymentMiddleware(t *testing.T) {
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
 
-		// The existing model should be preserved (not overwritten)
+		// The deployment path should remain authoritative.
 		if rr.Code == http.StatusNotFound {
 			t.Fatalf("Route not found: got status %d; body=%s", rr.Code, rr.Body.String())
 		}
 
-		t.Logf("Middleware preserved existing model field with status %d", rr.Code)
+		t.Logf("Middleware overrode existing model field with status %d", rr.Code)
+	})
+
+	t.Run("AnthropicDeploymentCountTokensRouteExists", func(t *testing.T) {
+		deploymentID := "claude-opus-4-7"
+		requestBody := map[string]interface{}{
+			"messages": []map[string]string{
+				{"role": "user", "content": "Test"},
+			},
+		}
+		body, _ := json.Marshal(requestBody)
+
+		req := httptest.NewRequest(http.MethodPost, "/anthropic/deployments/"+deploymentID+"/messages/count_tokens?api-version=2025-04-01-preview", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code == http.StatusNotFound {
+			t.Fatalf("Anthropic deployment count_tokens route not found: got status %d; body=%s", rr.Code, rr.Body.String())
+		}
+
+		t.Logf("Anthropic deployment count_tokens route correctly handled request with status %d", rr.Code)
 	})
 }

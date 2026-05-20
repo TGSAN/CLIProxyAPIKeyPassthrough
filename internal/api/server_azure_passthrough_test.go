@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -26,9 +27,15 @@ import (
 func TestAzureAPIKeyPassthrough(t *testing.T) {
 	// Create a fake upstream server that captures the Authorization header
 	var capturedAuthHeader string
+	var capturedRequestBody string
+	var capturedRequestPath string
+	var upstreamHitCount atomic.Int32
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHitCount.Add(1)
 		capturedAuthHeader = r.Header.Get("Authorization")
-		io.ReadAll(r.Body) // consume body
+		capturedRequestPath = r.URL.Path
+		bodyBytes, _ := io.ReadAll(r.Body)
+		capturedRequestBody = string(bodyBytes)
 
 		// Return a fake successful response
 		w.Header().Set("Content-Type", "application/json")
@@ -123,6 +130,9 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 
 	t.Run("AzureDeploymentEndpoint_PassthroughAPIKey", func(t *testing.T) {
 		capturedAuthHeader = ""
+		capturedRequestBody = ""
+		capturedRequestPath = ""
+		upstreamHitCount.Store(0)
 
 		deploymentID := "azure-test" // This should match the model/provider
 
@@ -148,6 +158,16 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 		t.Logf("Response status: %d", rr.Code)
 		t.Logf("Response body: %s", rr.Body.String())
 		t.Logf("Captured upstream Authorization header: %s", capturedAuthHeader)
+		t.Logf("Captured upstream request path: %s", capturedRequestPath)
+		t.Logf("Captured upstream request body: %s", capturedRequestBody)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d; body=%s", http.StatusOK, rr.Code, rr.Body.String())
+		}
+
+		if upstreamHitCount.Load() != 1 {
+			t.Fatalf("expected exactly 1 upstream hit, got %d", upstreamHitCount.Load())
+		}
 
 		// Verify the upstream received the client's API key
 		expectedAuth := "Bearer " + clientAPIKey
@@ -160,10 +180,82 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 			t.Errorf("CRITICAL BUG: Authorization header is 'Bearer' with NO KEY!\nClient sent: %s\nUpstream received: %s",
 				expectedAuth, capturedAuthHeader)
 		}
+
+		if capturedRequestPath != "/chat/completions" {
+			t.Errorf("expected upstream path %q, got %q", "/chat/completions", capturedRequestPath)
+		}
+
+		if !strings.Contains(capturedRequestBody, `"messages":[`) {
+			t.Errorf("expected upstream request body to preserve messages, got: %s", capturedRequestBody)
+		}
+	})
+
+	t.Run("AzureDeploymentResponsesEndpoint_PassthroughAPIKey", func(t *testing.T) {
+		capturedAuthHeader = ""
+		capturedRequestBody = ""
+		capturedRequestPath = ""
+		upstreamHitCount.Store(0)
+
+		deploymentID := "azure-test"
+		requestBody := map[string]interface{}{
+			"input": "Hello from responses",
+		}
+		body, _ := json.Marshal(requestBody)
+
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/openai/deployments/"+deploymentID+"/responses?api-version=2025-04-01-preview",
+			bytes.NewReader(body),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+clientAPIKey)
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		t.Logf("Response status: %d", rr.Code)
+		t.Logf("Response body: %s", rr.Body.String())
+		t.Logf("Captured upstream Authorization header: %s", capturedAuthHeader)
+		t.Logf("Captured upstream request path: %s", capturedRequestPath)
+		t.Logf("Captured upstream request body: %s", capturedRequestBody)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d; body=%s", http.StatusOK, rr.Code, rr.Body.String())
+		}
+
+		if upstreamHitCount.Load() != 1 {
+			t.Fatalf("expected exactly 1 upstream hit, got %d", upstreamHitCount.Load())
+		}
+
+		expectedAuth := "Bearer " + clientAPIKey
+		if !strings.Contains(capturedAuthHeader, clientAPIKey) {
+			t.Errorf("API key passthrough FAILED for Azure deployment responses endpoint!\nExpected Authorization: %s\nGot Authorization: %s",
+				expectedAuth, capturedAuthHeader)
+		}
+
+		if !strings.Contains(capturedRequestBody, `"model":"`+deploymentID+`"`) {
+			t.Errorf("deployment model injection FAILED for Azure deployment responses endpoint!\nExpected request body to include model %q\nGot body: %s",
+				deploymentID, capturedRequestBody)
+		}
+
+		if capturedRequestPath != "/chat/completions" {
+			t.Errorf("expected upstream path %q, got %q", "/chat/completions", capturedRequestPath)
+		}
+
+		if !strings.Contains(capturedRequestBody, `"messages":[`) {
+			t.Errorf("expected upstream request body to preserve translated messages payload, got: %s", capturedRequestBody)
+		}
+
+		if !strings.Contains(capturedRequestBody, `"Hello from responses"`) {
+			t.Errorf("expected upstream request body to preserve input content, got: %s", capturedRequestBody)
+		}
 	})
 
 	t.Run("AzureV1Endpoint_PassthroughAPIKey", func(t *testing.T) {
 		capturedAuthHeader = ""
+		capturedRequestBody = ""
+		capturedRequestPath = ""
+		upstreamHitCount.Store(0)
 
 		clientAPIKey := "client-secret-key-67890"
 
@@ -190,6 +282,15 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 		t.Logf("Response status: %d", rr.Code)
 		t.Logf("Response body: %s", rr.Body.String())
 		t.Logf("Captured upstream Authorization header: %s", capturedAuthHeader)
+		t.Logf("Captured upstream request path: %s", capturedRequestPath)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d; body=%s", http.StatusOK, rr.Code, rr.Body.String())
+		}
+
+		if upstreamHitCount.Load() != 1 {
+			t.Fatalf("expected exactly 1 upstream hit, got %d", upstreamHitCount.Load())
+		}
 
 		// Verify the upstream received the client's API key
 		expectedAuth := "Bearer " + clientAPIKey
@@ -201,6 +302,117 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 		if capturedAuthHeader == "Bearer " || capturedAuthHeader == "Bearer" {
 			t.Errorf("CRITICAL BUG: Authorization header is 'Bearer' with NO KEY!\nClient sent: %s\nUpstream received: %s",
 				expectedAuth, capturedAuthHeader)
+		}
+
+		if capturedRequestPath != "/chat/completions" {
+			t.Errorf("expected upstream path %q, got %q", "/chat/completions", capturedRequestPath)
+		}
+	})
+
+	t.Run("AnthropicDeploymentMessagesEndpoint_PassthroughAPIKey", func(t *testing.T) {
+		capturedAuthHeader = ""
+		capturedRequestBody = ""
+		capturedRequestPath = ""
+		upstreamHitCount.Store(0)
+
+		deploymentID := "azure-test"
+		requestBody := map[string]interface{}{
+			"messages": []map[string]string{
+				{"role": "user", "content": "Hello from anthropic deployment"},
+			},
+			"max_tokens": 100,
+		}
+		body, _ := json.Marshal(requestBody)
+
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/anthropic/deployments/"+deploymentID+"/messages?api-version=2025-04-01-preview",
+			bytes.NewReader(body),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+clientAPIKey2)
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		t.Logf("Response status: %d", rr.Code)
+		t.Logf("Response body: %s", rr.Body.String())
+		t.Logf("Captured upstream Authorization header: %s", capturedAuthHeader)
+		t.Logf("Captured upstream request path: %s", capturedRequestPath)
+		t.Logf("Captured upstream request body: %s", capturedRequestBody)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d; body=%s", http.StatusOK, rr.Code, rr.Body.String())
+		}
+
+		if upstreamHitCount.Load() != 1 {
+			t.Fatalf("expected exactly 1 upstream hit, got %d", upstreamHitCount.Load())
+		}
+
+		expectedAuth := "Bearer " + clientAPIKey2
+		if !strings.Contains(capturedAuthHeader, clientAPIKey2) {
+			t.Errorf("API key passthrough FAILED for Anthropic deployment messages endpoint!\nExpected Authorization: %s\nGot Authorization: %s",
+				expectedAuth, capturedAuthHeader)
+		}
+
+		if !strings.Contains(capturedRequestBody, `"model":"`+deploymentID+`"`) {
+			t.Errorf("deployment model injection FAILED for Anthropic deployment messages endpoint!\nExpected request body to include model %q\nGot body: %s",
+				deploymentID, capturedRequestBody)
+		}
+
+		if capturedRequestPath != "/chat/completions" {
+			t.Errorf("expected upstream path %q, got %q", "/chat/completions", capturedRequestPath)
+		}
+
+		if !strings.Contains(capturedRequestBody, `"messages":[`) {
+			t.Errorf("expected upstream request body to preserve messages, got: %s", capturedRequestBody)
+		}
+
+		if !strings.Contains(capturedRequestBody, `"max_tokens":100`) {
+			t.Errorf("expected upstream request body to preserve max_tokens, got: %s", capturedRequestBody)
+		}
+	})
+
+	t.Run("DeploymentPathOverridesConflictingBodyModel", func(t *testing.T) {
+		capturedAuthHeader = ""
+		capturedRequestBody = ""
+		capturedRequestPath = ""
+		upstreamHitCount.Store(0)
+
+		deploymentID := "azure-test"
+		requestBody := map[string]interface{}{
+			"model": "different-model",
+			"messages": []map[string]string{
+				{"role": "user", "content": "Use deployment model"},
+			},
+		}
+		body, _ := json.Marshal(requestBody)
+
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/openai/deployments/"+deploymentID+"/chat/completions?api-version=2025-04-01-preview",
+			bytes.NewReader(body),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+clientAPIKey)
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d; body=%s", http.StatusOK, rr.Code, rr.Body.String())
+		}
+
+		if upstreamHitCount.Load() != 1 {
+			t.Fatalf("expected exactly 1 upstream hit, got %d", upstreamHitCount.Load())
+		}
+
+		if !strings.Contains(capturedRequestBody, `"model":"`+deploymentID+`"`) {
+			t.Fatalf("expected deployment ID to override body model; got body: %s", capturedRequestBody)
+		}
+
+		if strings.Contains(capturedRequestBody, `"model":"different-model"`) {
+			t.Fatalf("expected conflicting body model to be removed or overridden; got body: %s", capturedRequestBody)
 		}
 	})
 }

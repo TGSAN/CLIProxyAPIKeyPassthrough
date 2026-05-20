@@ -360,9 +360,9 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 }
 
 // azureDeploymentMiddleware injects the Azure deployment ID into the request body as the model field.
-// Azure OpenAI API uses deployment IDs in the URL path instead of model names in the request body.
-// This middleware reads the request body, adds the deployment ID as the model if not present,
-// and rewrites the request body for downstream handlers.
+// Azure-style deployment APIs use deployment IDs in the URL path instead of model names in the request body.
+// This middleware reads the request body, forces the deployment ID as the model, and rewrites the
+// request body for downstream handlers so the deployment path remains authoritative.
 func (s *Server) azureDeploymentMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		deploymentID := c.Param("deployment_id")
@@ -387,10 +387,8 @@ func (s *Server) azureDeploymentMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Inject deployment ID as model if not already present
-		if _, hasModel := requestBody["model"]; !hasModel {
-			requestBody["model"] = deploymentID
-		}
+		// Force deployment ID as model so the deployment path remains authoritative.
+		requestBody["model"] = deploymentID
 
 		// Re-serialize the modified body
 		modifiedBody, err := json.Marshal(requestBody)
@@ -473,7 +471,11 @@ func (s *Server) setupRoutes() {
 	{
 		azureOpenAI.POST("/:deployment_id/chat/completions", openaiHandlers.ChatCompletions)
 		azureOpenAI.POST("/:deployment_id/completions", openaiHandlers.Completions)
+		azureOpenAI.POST("/:deployment_id/images/generations", openaiHandlers.ImagesGenerations)
+		azureOpenAI.POST("/:deployment_id/images/edits", openaiHandlers.ImagesEdits)
 		azureOpenAI.POST("/:deployment_id/embeddings", openaiHandlers.Completions)
+		azureOpenAI.POST("/:deployment_id/responses", openaiResponsesHandlers.Responses)
+		azureOpenAI.POST("/:deployment_id/responses/compact", openaiResponsesHandlers.Compact)
 	}
 
 	// Azure OpenAI SDK also uses /openai/v1/* when configured with azure_endpoint that includes /openai
@@ -498,6 +500,16 @@ func (s *Server) setupRoutes() {
 	{
 		anthropicV1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		anthropicV1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
+	}
+
+	// Anthropic deployment-style API routes.
+	// Format: /anthropic/deployments/{deployment-id}/messages?api-version=xxx
+	anthropicDeployments := s.engine.Group("/anthropic/deployments")
+	anthropicDeployments.Use(AuthMiddleware(s.accessManager))
+	anthropicDeployments.Use(s.azureDeploymentMiddleware())
+	{
+		anthropicDeployments.POST("/:deployment_id/messages", claudeCodeHandlers.ClaudeMessages)
+		anthropicDeployments.POST("/:deployment_id/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 	}
 
 	// Root endpoint
