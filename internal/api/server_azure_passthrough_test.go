@@ -89,8 +89,10 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 
 	server := newTestServerWithConfig(t, cfg)
 
-	// Register the OpenAI compat executor for the "azure-test" provider
-	azureExecutor := executor.NewOpenAICompatExecutor("azure-test", cfg)
+	// Register the OpenAI compat executor for the "azure-test" provider.
+	// The executor identifier must use the normalized provider key (openai-compatible- prefix)
+	// to match what executorKeyFromAuth() returns for auths with compat_name set.
+	azureExecutor := executor.NewOpenAICompatExecutor("openai-compatible-azure-test", cfg)
 	server.handlers.AuthManager.RegisterExecutor(azureExecutor)
 
 	// Register the model in the global registry so it can be found.
@@ -98,7 +100,7 @@ func TestAzureAPIKeyPassthrough(t *testing.T) {
 	// to look up supported models via registry.GetModelsForClient(authID).
 	registry.GetGlobalRegistry().RegisterClient(
 		"test-azure-compat-auth",
-		"azure-test", // Provider name (matches the OpenAI compat name)
+		"openai-compatible-azure-test", // Provider name uses the normalized openai-compatible- prefix
 		[]*registry.ModelInfo{
 			{
 				ID:      "azure-test",
