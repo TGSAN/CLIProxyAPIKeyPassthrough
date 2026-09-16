@@ -1420,18 +1420,19 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
-		APIKey              *string                          `json:"api-key"`
-		Weight              json.RawMessage                  `json:"weight"`
-		Prefix              *string                          `json:"prefix"`
-		BaseURL             *string                          `json:"base-url"`
-		ProxyURL            *string                          `json:"proxy-url"`
-		AlphaSearch         *bool                            `json:"alpha-search"`
-		Models              *[]config.CodexModel             `json:"models"`
-		Headers             *map[string]string               `json:"headers"`
-		ExcludedModels      *[]string                        `json:"excluded-models"`
-		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
-		RequestRetry        *int                             `json:"request-retry"`
-		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
+		APIKey               *string                          `json:"api-key"`
+		Weight               json.RawMessage                  `json:"weight"`
+		Prefix               *string                          `json:"prefix"`
+		BaseURL              *string                          `json:"base-url"`
+		ProxyURL             *string                          `json:"proxy-url"`
+		AlphaSearch          *bool                            `json:"alpha-search"`
+		SessionUUIDTranslate *bool                            `json:"session-uuid-translate"`
+		Models               *[]config.CodexModel             `json:"models"`
+		Headers              *map[string]string               `json:"headers"`
+		ExcludedModels       *[]string                        `json:"excluded-models"`
+		DisableCooling       json.RawMessage                  `json:"disable-cooling"`
+		RequestRetry         *int                             `json:"request-retry"`
+		RequestScopedErrors  *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
 	}
 	var body struct {
 		Index *int           `json:"index"`
@@ -1493,6 +1494,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if body.Value.AlphaSearch != nil {
 		entry.AlphaSearch = *body.Value.AlphaSearch
+	}
+	if body.Value.SessionUUIDTranslate != nil {
+		entry.SessionUUIDTranslate = *body.Value.SessionUUIDTranslate
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.CodexModel(nil), (*body.Value.Models)...)

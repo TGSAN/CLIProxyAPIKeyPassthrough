@@ -488,6 +488,10 @@ type CodexKey struct {
 	// AlphaSearch allows this Codex API key to serve the Alpha Search endpoint.
 	AlphaSearch bool `yaml:"alpha-search,omitempty" json:"alpha-search,omitempty"`
 
+	// SessionUUIDTranslate rewrites the downstream session identity into a
+	// deterministic UUIDv7 on upstream Codex requests for this API key.
+	SessionUUIDTranslate bool `yaml:"session-uuid-translate,omitempty" json:"session-uuid-translate,omitempty"`
+
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 

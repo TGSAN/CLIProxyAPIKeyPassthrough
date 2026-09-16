@@ -311,6 +311,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if o.AlphaSearch != n.AlphaSearch {
 				changes = append(changes, fmt.Sprintf("codex[%d].alpha-search: %t -> %t", i, o.AlphaSearch, n.AlphaSearch))
 			}
+			if o.SessionUUIDTranslate != n.SessionUUIDTranslate {
+				changes = append(changes, fmt.Sprintf("codex[%d].session-uuid-translate: %t -> %t", i, o.SessionUUIDTranslate, n.SessionUUIDTranslate))
+			}
 			changes = appendOptionalBoolChange(changes, fmt.Sprintf("codex[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("codex[%d].api-key: updated", i))

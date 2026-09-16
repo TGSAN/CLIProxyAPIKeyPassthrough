@@ -191,6 +191,7 @@ func (cfg *Config) SanitizeXAIKeys() {
 	cfg.XAIKey = sanitizeCodexKeyEntries(cfg.XAIKey)
 	for i := range cfg.XAIKey {
 		cfg.XAIKey[i].AlphaSearch = false
+		cfg.XAIKey[i].SessionUUIDTranslate = false
 	}
 }
 

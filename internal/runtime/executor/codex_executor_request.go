@@ -136,8 +136,16 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if cache.ID == "" {
 		cache.ID = helps.ProviderSessionUUID("codex", req.Metadata)
 	}
+	var translatedSessionUUID string
+	if codexSessionUUIDTranslateEnabled(auth) {
+		var clientHeaders http.Header
+		if len(headerSets) > 0 {
+			clientHeaders = headerSets[0]
+		}
+		translatedSessionUUID = codexSessionTranslateUUID(ctx, auth, userPayload, cache.ID, codexSessionTranslateClientHeaders(ctx, clientHeaders))
+	}
 
-	if cache.ID != "" {
+	if cache.ID != "" && translatedSessionUUID == "" {
 		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", cache.ID)
 	}
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
@@ -145,6 +153,11 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	rawJSON, identityState = applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, rawJSON)
 	if identityState.promptCacheKey != "" {
 		cache.ID = identityState.promptCacheKey
+	}
+	if translatedSessionUUID != "" {
+		ctx = withCodexSessionTranslatedSession(ctx, translatedSessionUUID)
+		rawJSON = applyCodexSessionTranslateBody(rawJSON, translatedSessionUUID)
+		cache.ID = translatedSessionUUID
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {
