@@ -146,6 +146,74 @@ func TestApplyCodexSessionTranslate(t *testing.T) {
 	}
 }
 
+func TestApplyCodexSessionTranslateRewritesAllForwardedIdentities(t *testing.T) {
+	t.Parallel()
+
+	sessionUUID := codexSessionUUIDv7("translated-session")
+	headers := http.Header{}
+	headers.Set("Thread-Id", "legacy-thread")
+	headers.Set("Conversation_id", "legacy-conv")
+	headers.Set("X-Codex-Turn-Metadata", `{"prompt_cache_key":"legacy-key","turn_id":"turn-9","window_id":"legacy-key:0"}`)
+	body := []byte(`{"model":"gpt-5-codex","prompt_cache_key":"legacy-key","client_metadata":{"x-codex-installation-id":"legacy-install","x-codex-window-id":"legacy-key:0","x-codex-turn-metadata":"{\"prompt_cache_key\":\"legacy-key\",\"turn_id\":\"turn-9\",\"window_id\":\"legacy-key:0\"}"}}`)
+
+	body = applyCodexSessionTranslateBody(body, sessionUUID)
+	applyCodexSessionTranslateHeaders(headers, sessionUUID)
+
+	// A forwarded original identity would make upstream reject the mismatched request.
+	if strings.Contains(string(body), "legacy") {
+		t.Fatalf("stale identity left in body: %s", body)
+	}
+	for name, values := range headers {
+		for _, value := range values {
+			if strings.Contains(value, "legacy") {
+				t.Fatalf("stale identity left in header %s: %s", name, value)
+			}
+		}
+	}
+
+	// Session-bound values agree with the translated UUID; the per-turn ID survives.
+	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != sessionUUID {
+		t.Fatalf("body prompt_cache_key = %q, want %q", got, sessionUUID)
+	}
+	bodyTurnMetadata := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String()
+	if got := gjson.Get(bodyTurnMetadata, "prompt_cache_key").String(); got != sessionUUID {
+		t.Fatalf("body turn-metadata prompt_cache_key = %q, want %q", got, sessionUUID)
+	}
+	if got := gjson.Get(bodyTurnMetadata, "window_id").String(); got != codexSessionTranslateWindowID {
+		t.Fatalf("body turn-metadata window_id = %q, want %q", got, codexSessionTranslateWindowID)
+	}
+	if got := gjson.Get(bodyTurnMetadata, "turn_id").String(); got != "turn-9" {
+		t.Fatalf("body turn-metadata turn_id = %q, want turn-9 preserved", got)
+	}
+
+	headerTurnMetadata := headers.Get("X-Codex-Turn-Metadata")
+	if got := gjson.Get(headerTurnMetadata, "prompt_cache_key").String(); got != sessionUUID {
+		t.Fatalf("header turn-metadata prompt_cache_key = %q, want %q", got, sessionUUID)
+	}
+	if got := headers.Get("Thread-Id"); got != sessionUUID {
+		t.Fatalf("Thread-Id = %q, want %q", got, sessionUUID)
+	}
+	if got := headerValueCaseInsensitive(headers, "Conversation_id"); got != sessionUUID {
+		t.Fatalf("Conversation_id = %q, want %q", got, sessionUUID)
+	}
+}
+
+func TestApplyCodexSessionTranslateLeavesAbsentOptionalIdentities(t *testing.T) {
+	t.Parallel()
+
+	headers := http.Header{}
+	applyCodexSessionTranslateHeaders(headers, codexSessionUUIDv7("translated-session"))
+	if _, exists := headers["Thread-Id"]; exists {
+		t.Fatalf("Thread-Id unexpectedly injected: %v", headers["Thread-Id"])
+	}
+	if _, exists := headers["Conversation_id"]; exists {
+		t.Fatalf("Conversation_id unexpectedly injected: %v", headers["Conversation_id"])
+	}
+	if _, exists := headers["X-Codex-Turn-Metadata"]; exists {
+		t.Fatalf("X-Codex-Turn-Metadata unexpectedly injected: %v", headers["X-Codex-Turn-Metadata"])
+	}
+}
+
 func TestApplyCodexSessionTranslateDisabledKeepsRequestUnchanged(t *testing.T) {
 	t.Parallel()
 

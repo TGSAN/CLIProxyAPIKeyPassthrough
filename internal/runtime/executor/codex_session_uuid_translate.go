@@ -237,9 +237,27 @@ func codexSessionTranslateUUID(ctx context.Context, auth *cliproxyauth.Auth, pay
 	return fresh.String()
 }
 
-// applyCodexSessionTranslateBody stamps the translated session identity onto the
-// upstream body: prompt_cache_key becomes the translated session UUID and the
-// client_metadata Codex identity fields become the fixed installation/window IDs.
+// codexSessionTranslateTurnMetadata rewrites the session-bound fields of a Codex
+// turn-metadata JSON string so it agrees with the translated session UUID.
+func codexSessionTranslateTurnMetadata(rawTurnMetadata string, sessionUUID string) string {
+	if rawTurnMetadata == "" || !gjson.Valid(rawTurnMetadata) {
+		return rawTurnMetadata
+	}
+	updated := rawTurnMetadata
+	if gjson.Get(rawTurnMetadata, "prompt_cache_key").Exists() {
+		updated, _ = sjson.Set(updated, "prompt_cache_key", sessionUUID)
+	}
+	if gjson.Get(rawTurnMetadata, "window_id").Exists() {
+		updated, _ = sjson.Set(updated, "window_id", codexSessionTranslateWindowID)
+	}
+	return updated
+}
+
+// applyCodexSessionTranslateBody stamps the translated session identity onto every
+// session-bound body field: prompt_cache_key becomes the translated session UUID, the
+// client_metadata installation/window IDs become the fixed identities, and an existing
+// client_metadata turn-metadata string is rewritten to match. Upstream cross-checks
+// these values, so leaving a forwarded original in place would be rejected.
 func applyCodexSessionTranslateBody(body []byte, sessionUUID string) []byte {
 	if len(body) == 0 || sessionUUID == "" {
 		return body
@@ -247,11 +265,18 @@ func applyCodexSessionTranslateBody(body []byte, sessionUUID string) []byte {
 	body = helps.SetStringIfDifferent(body, "prompt_cache_key", sessionUUID)
 	body, _ = sjson.SetBytes(body, "client_metadata.x-codex-installation-id", codexSessionTranslateInstallationID)
 	body, _ = sjson.SetBytes(body, "client_metadata.x-codex-window-id", codexSessionTranslateWindowID)
+	if turnMetadata := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata"); turnMetadata.Exists() && turnMetadata.Type == gjson.String {
+		if updated := codexSessionTranslateTurnMetadata(turnMetadata.String(), sessionUUID); updated != turnMetadata.String() {
+			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata", updated)
+		}
+	}
 	return body
 }
 
-// applyCodexSessionTranslateHeaders forces the upstream X-Client-Request-Id,
-// session-id and X-Codex-Window-Id headers to the translated session UUID.
+// applyCodexSessionTranslateHeaders forces every session-bound upstream header to the
+// translated session identity: X-Client-Request-Id, session-id and X-Codex-Window-Id
+// are always set; forwarded Thread-Id, Conversation_id and X-Codex-Turn-Metadata are
+// rewritten only when present so no stale original identity survives.
 func applyCodexSessionTranslateHeaders(headers http.Header, sessionUUID string) {
 	if headers == nil || sessionUUID == "" {
 		return
@@ -259,6 +284,15 @@ func applyCodexSessionTranslateHeaders(headers http.Header, sessionUUID string) 
 	headers.Set("X-Client-Request-Id", sessionUUID)
 	setCodexSessionHeaderCasePreserved(headers, "Session-Id", sessionUUID)
 	headers.Set("X-Codex-Window-Id", codexSessionTranslateWindowID)
+	if headerValueCaseInsensitive(headers, "Thread-Id") != "" {
+		setHeaderCasePreserved(headers, "Thread-Id", sessionUUID)
+	}
+	if headerValueCaseInsensitive(headers, "Conversation_id") != "" {
+		setHeaderCasePreserved(headers, "Conversation_id", sessionUUID)
+	}
+	if rawTurnMetadata := headerValueCaseInsensitive(headers, "X-Codex-Turn-Metadata"); rawTurnMetadata != "" {
+		setHeaderCasePreserved(headers, "X-Codex-Turn-Metadata", codexSessionTranslateTurnMetadata(rawTurnMetadata, sessionUUID))
+	}
 }
 
 // applyCodexSessionTranslateHeadersFromContext applies the header stage using the
