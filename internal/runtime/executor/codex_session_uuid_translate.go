@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -104,11 +105,19 @@ func codexSessionTranslateRawHeaderID(headers http.Header) string {
 	return ""
 }
 
-// codexSessionUUIDv7 maps an arbitrary session identity onto a deterministic UUIDv7.
-// Values that are already UUIDv7 pass through unchanged. Other values are hash-mapped
-// and stamped with the UUIDv7 version/variant bits: collisions are allowed, but the
-// result is always inferable from the original value alone, without any lookup table.
+// codexSessionUUIDv7TimeWindow truncates mapped UUIDv7 timestamps: upstream validates
+// the embedded time, so mapped values carry the real clock time rounded down to this
+// window. A raw value stays reproducible within one window; across windows the value
+// rotates, which aligns with upstream prompt-cache TTL expiry.
+// ponytail: fixed 10m window; add config knob only if rotation measurably hurts cache hits.
+const codexSessionUUIDv7TimeWindow = 10 * time.Minute
+
 func codexSessionUUIDv7(raw string) string {
+	return codexSessionUUIDv7At(raw, time.Now())
+}
+
+// codexSessionUUIDv7At is codexSessionUUIDv7 with an explicit clock for tests.
+func codexSessionUUIDv7At(raw string, now time.Time) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
@@ -117,6 +126,14 @@ func codexSessionUUIDv7(raw string) string {
 		return parsed.String()
 	}
 	mapped := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:session-uuid-v7:"+raw))
+	windowMS := int64(codexSessionUUIDv7TimeWindow / time.Millisecond)
+	timestamp := uint64(now.UnixMilli() / windowMS * windowMS)
+	mapped[0] = byte(timestamp >> 40)
+	mapped[1] = byte(timestamp >> 32)
+	mapped[2] = byte(timestamp >> 24)
+	mapped[3] = byte(timestamp >> 16)
+	mapped[4] = byte(timestamp >> 8)
+	mapped[5] = byte(timestamp)
 	mapped[6] = (mapped[6] & 0x0F) | 0x70
 	mapped[8] = (mapped[8] & 0x3F) | 0x80
 	return mapped.String()
@@ -134,29 +151,90 @@ func codexSessionTranslateSession(ctx context.Context, raw string) string {
 	return sessionUUID
 }
 
+// codexSessionTranslateConversationRoot derives a stable conversation identity from the
+// original payload: the ordered contents of the first two user messages and the first
+// assistant message (type=message items from input/messages, nested request included),
+// joined with the downstream API key. It returns "" when the conversation does not yet
+// contain at least two user messages and one assistant message.
+func codexSessionTranslateConversationRoot(ctx context.Context, payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	items := gjson.GetBytes(payload, "input")
+	if !items.IsArray() {
+		items = gjson.GetBytes(payload, "messages")
+	}
+	if !items.IsArray() {
+		nested := gjson.GetBytes(payload, "request")
+		if items = nested.Get("input"); !items.IsArray() {
+			items = nested.Get("messages")
+		}
+	}
+	if !items.IsArray() {
+		return ""
+	}
+	var contents []string
+	var userCount, assistantCount int
+	for _, item := range items.Array() {
+		if itemType := strings.ToLower(strings.TrimSpace(item.Get("type").String())); itemType != "" && itemType != "message" {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+		content := strings.TrimSpace(item.Get("content").Raw)
+		if content == "" {
+			continue
+		}
+		switch role {
+		case "user":
+			if userCount < 2 {
+				contents = append(contents, content)
+				userCount++
+			}
+		case "assistant":
+			if assistantCount == 0 {
+				contents = append(contents, content)
+				assistantCount++
+			}
+		}
+		if userCount == 2 && assistantCount == 1 {
+			break
+		}
+	}
+	if userCount != 2 || assistantCount != 1 {
+		return ""
+	}
+	contents = append(contents, helps.APIKeyFromContext(ctx))
+	return "conversation-root:" + strings.Join(contents, "\x00")
+}
+
 // codexSessionTranslateUUID resolves the downstream session identity for a credential
-// with session-uuid-translate enabled and maps it to its translated UUIDv7. When no
-// downstream signal exists it falls back to the executor-derived session identity
-// (fallbackID), and only then generates a fresh random UUIDv7, so an enabled
-// credential always injects a session UUID.
-func codexSessionTranslateUUID(ctx context.Context, auth *cliproxyauth.Auth, payload []byte, fallbackID string, clientHeaders http.Header) string {
+// with session-uuid-translate enabled and maps it to its translated UUIDv7.
+// Resolution order: downstream signals, then the conversation-root message hash (first
+// two user + first assistant message plus the downstream API key), then derivedID (the
+// request's own execution / conversation-derived identity), then a fresh random UUIDv7.
+// derivedID must never be a per-credential constant, otherwise every conversation
+// would share one session UUID.
+func codexSessionTranslateUUID(ctx context.Context, auth *cliproxyauth.Auth, payload []byte, derivedID string, clientHeaders http.Header) string {
 	if !codexSessionUUIDTranslateEnabled(auth) {
 		return ""
 	}
 	raw := codexSessionTranslateRawID(payload, clientHeaders)
 	if raw == "" {
-		raw = strings.TrimSpace(fallbackID)
+		raw = codexSessionTranslateConversationRoot(ctx, payload)
 	}
 	if raw == "" {
-		fresh, errNew := uuid.NewV7()
-		if errNew != nil {
-			helps.LogWithRequestID(ctx).Warnf("codex session-uuid-translate: no downstream session found and UUIDv7 generation failed: %v", errNew)
-			return ""
-		}
-		helps.LogWithRequestID(ctx).Infof("codex session-uuid-translate: no downstream session found, generated session UUID %s", fresh.String())
-		return fresh.String()
+		raw = strings.TrimSpace(derivedID)
 	}
-	return codexSessionTranslateSession(ctx, raw)
+	if raw != "" {
+		return codexSessionTranslateSession(ctx, raw)
+	}
+	fresh, errNew := uuid.NewV7()
+	if errNew != nil {
+		helps.LogWithRequestID(ctx).Warnf("codex session-uuid-translate: no downstream session found and UUIDv7 generation failed: %v", errNew)
+		return ""
+	}
+	helps.LogWithRequestID(ctx).Infof("codex session-uuid-translate: no downstream session found, generated session UUID %s", fresh.String())
+	return fresh.String()
 }
 
 // applyCodexSessionTranslateBody stamps the translated session identity onto the

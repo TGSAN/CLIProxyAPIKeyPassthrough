@@ -428,7 +428,7 @@ nonstream-keepalive-interval: 0
 #         action: "stop-and-cooldown"
 #     base-url: "https://www.example.com" # use the custom codex API endpoint
 #     alpha-search: false # optional: allow this key to serve /v1/alpha/search via base-url + /alpha/search
-#     session-uuid-translate: false # optional: translate the downstream session identity (prompt_cache_key, then session/request headers) into a deterministic UUIDv7; missing identities fall back to the derived session, else a freshly generated UUIDv7; upstream requests then carry X-Client-Request-Id, session-id, X-Codex-Window-Id and rewritten prompt_cache_key/client_metadata Codex identities; the translation is logged per request
+#     session-uuid-translate: false # optional: translate the downstream session identity (prompt_cache_key, then session/request headers) into a UUIDv7 carrying the current (10-minute-window) timestamp; when missing, derive it from the first two user + first assistant message contents plus the downstream API key, else fall back to the derived session, else a fresh random UUIDv7; upstream requests then carry X-Client-Request-Id, session-id, X-Codex-Window-Id and rewritten prompt_cache_key/client_metadata Codex identities; the translation is logged per request
 #     headers:
 #       X-Custom-Header: "custom-value"
 #       # Values starting with "$" dynamically copy the header value from downstream client requests.

@@ -142,7 +142,9 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		if len(headerSets) > 0 {
 			clientHeaders = headerSets[0]
 		}
-		translatedSessionUUID = codexSessionTranslateUUID(ctx, auth, userPayload, cache.ID, codexSessionTranslateClientHeaders(ctx, clientHeaders))
+		// Not cache.ID: it may hold the per-API-key prompt-cache constant, which would
+		// give every conversation the same translated session UUID.
+		translatedSessionUUID = codexSessionTranslateUUID(ctx, auth, userPayload, helps.ProviderSessionUUID("codex", req.Metadata), codexSessionTranslateClientHeaders(ctx, clientHeaders))
 	}
 
 	if cache.ID != "" && translatedSessionUUID == "" {

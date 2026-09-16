@@ -85,7 +85,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
-	if translateSessionUUID := codexSessionTranslateUUID(ctx, auth, originalPayloadSource, codexSessionHeaderValue(wsHeaders), codexSessionTranslateClientHeaders(ctx, opts.Headers)); translateSessionUUID != "" {
+	if translateSessionUUID := codexSessionTranslateUUID(ctx, auth, originalPayloadSource, helps.ProviderSessionUUID("codex", req.Metadata), codexSessionTranslateClientHeaders(ctx, opts.Headers)); translateSessionUUID != "" {
 		upstreamBody = applyCodexSessionTranslateBody(upstreamBody, translateSessionUUID)
 		applyCodexSessionTranslateHeaders(wsHeaders, translateSessionUUID)
 	}

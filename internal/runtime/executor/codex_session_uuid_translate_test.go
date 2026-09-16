@@ -2,10 +2,15 @@ package executor
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
@@ -50,6 +55,28 @@ func TestCodexSessionUUIDv7MapsNonV7Deterministically(t *testing.T) {
 	}
 }
 
+func TestCodexSessionUUIDv7EmbedsCurrentTimestamp(t *testing.T) {
+	t.Parallel()
+
+	fixed := time.UnixMilli(1758060000123).UTC()
+	mapped := uuid.MustParse(codexSessionUUIDv7At("raw-session", fixed))
+
+	embedded := int64(binary.BigEndian.Uint64(append([]byte{0, 0}, mapped[:6]...)))
+	if want := fixed.UnixMilli() / 600000 * 600000; embedded != want {
+		t.Fatalf("embedded timestamp = %d, want %d", embedded, want)
+	}
+	if mapped.Version() != uuid.Version(7) || mapped.Variant() != uuid.RFC4122 {
+		t.Fatalf("mapped value %q is not UUIDv7", mapped)
+	}
+
+	// Stable inside one window, rotates into the next window.
+	if again := codexSessionUUIDv7At("raw-session", fixed.Add(9*time.Minute+59*time.Second)); again != mapped.String() {
+		t.Fatalf("value rotated inside window: %q vs %q", again, mapped)
+	}
+	if rotated := codexSessionUUIDv7At("raw-session", fixed.Add(10*time.Minute)); rotated == mapped.String() {
+		t.Fatal("value did not rotate across windows")
+	}
+}
 func TestCodexSessionTranslateRawIDPrecedence(t *testing.T) {
 	t.Parallel()
 
@@ -151,6 +178,78 @@ func TestCodexSessionTranslateUUIDFallbacksWhenNoDownstreamSignal(t *testing.T) 
 	}
 	if again := codexSessionTranslateUUID(context.Background(), auth, nil, "", http.Header{}); again == fresh {
 		t.Fatal("random fallback unexpectedly deterministic across requests")
+	}
+}
+
+func translateTestContextWithAPIKey(apiKey string) context.Context {
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Set("userApiKey", apiKey)
+	return context.WithValue(context.Background(), "gin", ginCtx)
+}
+
+func TestCodexSessionTranslateConversationRoot(t *testing.T) {
+	t.Parallel()
+
+	auth := translateTestAuth(true)
+	payload := []byte(`{"model":"gpt-5-codex","input":[
+		{"type":"message","role":"user","content":"first prompt"},
+		{"type":"message","role":"assistant","content":"first answer"},
+		{"type":"message","role":"user","content":"second prompt"},
+		{"type":"message","role":"assistant","content":"second answer"},
+		{"type":"message","role":"user","content":"third prompt"}
+	]}`)
+
+	ctxA := translateTestContextWithAPIKey("downstream-key-a")
+	ctxB := translateTestContextWithAPIKey("downstream-key-b")
+
+	first := codexSessionTranslateUUID(ctxA, auth, payload, "", http.Header{})
+	if parsed, errParse := uuid.Parse(first); errParse != nil || parsed.Version() != uuid.Version(7) {
+		t.Fatalf("conversation-root UUID %q is not UUIDv7: %v", first, errParse)
+	}
+
+	// Exact root value: first two user + first assistant contents, in order, with the key.
+	wantRoot := "conversation-root:" + strings.Join([]string{`"first prompt"`, `"first answer"`, `"second prompt"`, "downstream-key-a"}, "\x00")
+	if gotRoot := codexSessionTranslateConversationRoot(ctxA, payload); gotRoot != wantRoot {
+		t.Fatalf("conversation root = %q, want %q", gotRoot, wantRoot)
+	}
+
+	// Same conversation + same key: stable across requests (later turns included).
+	if repeat := codexSessionTranslateUUID(ctxA, auth, payload, "", http.Header{}); repeat != first {
+		t.Fatalf("conversation-root UUID changed: %q vs %q", first, repeat)
+	}
+
+	// Same conversation, different downstream API key: different session UUID.
+	if other := codexSessionTranslateUUID(ctxB, auth, payload, "", http.Header{}); other == first {
+		t.Fatal("different API keys produced the same conversation-root UUID")
+	}
+
+	// Explicit downstream session signal still wins over the conversation root.
+	headers := http.Header{}
+	headers.Set("Session-Id", "explicit-session")
+	if got := codexSessionTranslateUUID(ctxA, auth, payload, "", headers); got != codexSessionUUIDv7("explicit-session") {
+		t.Fatalf("explicit session precedence = %q, want %q", got, codexSessionUUIDv7("explicit-session"))
+	}
+}
+
+func TestCodexSessionTranslateConversationRootNeedsTwoUserOneAssistant(t *testing.T) {
+	t.Parallel()
+
+	ctx := translateTestContextWithAPIKey("downstream-key")
+
+	short := []byte(`{"input":[{"type":"message","role":"user","content":"a"},{"type":"message","role":"assistant","content":"b"}]}`)
+	if got := codexSessionTranslateConversationRoot(ctx, short); got != "" {
+		t.Fatalf("conversation root with one user message = %q, want empty", got)
+	}
+
+	noAssistant := []byte(`{"input":[{"type":"message","role":"user","content":"a"},{"type":"message","role":"user","content":"b"}]}`)
+	if got := codexSessionTranslateConversationRoot(ctx, noAssistant); got != "" {
+		t.Fatalf("conversation root without assistant message = %q, want empty", got)
+	}
+
+	messages := []byte(`{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"user","content":"c"}]}`)
+	if got := codexSessionTranslateConversationRoot(ctx, messages); got == "" {
+		t.Fatal("chat-completions messages shape produced no conversation root")
 	}
 }
 
