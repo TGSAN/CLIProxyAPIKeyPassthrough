@@ -286,10 +286,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	var bufferedChunks [][]byte
 	var initialChunks [][]byte
 	immediateTerminal := false
-	// bootstrapTerminalErr holds a non-overload terminal failure seen while buffering. It is
-	// delivered as an in-stream chunk after the buffered handshake so downstream behaviour stays
-	// identical to the unbuffered path instead of silently turning into a credential failover.
-	var bootstrapTerminalErr error
 
 	if buffering {
 		for {
@@ -304,6 +300,15 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
 			if errRead != nil {
+				if ctx != nil && ctx.Err() != nil {
+					if sess != nil {
+						sess.clearActive(conn, readCh)
+						unlockStreamSession()
+					} else {
+						_ = closer.Close()
+					}
+					return nil, ctx.Err()
+				}
 				mappedErr := mapCodexWebsocketReadError(errRead)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, conn, "read_error", mappedErr)
@@ -315,7 +320,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
 				reporter.PublishFailure(ctx, mappedErr)
-				return nil, mappedErr
+				// Nothing has been committed downstream yet. A read failure during bootstrap
+				// means the upstream produced no usable frames, so report it as a retryable
+				// empty stream and let the conductor rotate credentials. An oversized frame is
+				// a request fault on every credential, so it keeps its scoped 413.
+				if _, tooBig := mappedErr.(codexWebsocketMessageTooBigError); tooBig {
+					return nil, mappedErr
+				}
+				return nil, newCodexEmptyStreamError()
 			}
 			if msgType != websocket.TextMessage {
 				if msgType == websocket.BinaryMessage {
@@ -364,19 +376,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, wsErr
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErr(payload); ok {
-				// A transient capacity rejection is retried on another credential, so the
-				// downstream websocket session must survive this upstream teardown. Notifying
-				// the disconnect here would close the client connection before the retry can
-				// deliver anything. Every other terminal failure is forwarded in-stream and
-				// legitimately terminates the session, so it keeps the notifying variant.
-				failoverPending := isCodexOverloadBootstrapFailure(terminalBody)
+				// The attempt fails synchronously below, and the conductor may retry it on
+				// another credential, so the downstream websocket session must survive this
+				// upstream teardown. Notifying the disconnect here would close the client
+				// connection before the retry can deliver anything.
 				if sess != nil {
 					unlockStreamSession()
-					if failoverPending {
-						e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "terminal_failure", streamErr)
-					} else {
-						e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
-					}
+					e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "terminal_failure", streamErr)
 					sess.clearActive(conn, readCh)
 				} else {
 					logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "terminal_failure", streamErr)
@@ -389,15 +395,16 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", streamErr)
 				reporter.PublishFailure(ctx, streamErr)
-				if failoverPending {
-					// Fail the attempt before the downstream headers are committed so the
-					// conductor can transparently retry on another credential, and report the
-					// status the upstream refused to put on the wire.
+				if isCodexOverloadBootstrapFailure(terminalBody) {
+					// Report the status the upstream refused to put on the wire.
 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d buffered handshake events, failing over", len(bufferedChunks))
 					return nil, newCodexBootstrapOverloadErr(terminalBody)
 				}
-				bootstrapTerminalErr = streamErr
-				break
+				// Nothing has been committed downstream yet, so the failure returns
+				// synchronously with its classified status: retryable statuses let the
+				// conductor fail over to another credential, request faults still return
+				// straight to the client.
+				return nil, streamErr
 			}
 
 			eventType := gjson.GetBytes(payload, "type").String()
@@ -453,23 +460,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 	}
 
-	chanCapacity := len(bufferedChunks) + len(initialChunks)
-	if bootstrapTerminalErr != nil {
-		chanCapacity++
-	}
-	out := make(chan cliproxyexecutor.StreamChunk, chanCapacity)
+	out := make(chan cliproxyexecutor.StreamChunk, len(bufferedChunks)+len(initialChunks))
 	for _, chunk := range bufferedChunks {
 		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
 	}
 	for _, chunk := range initialChunks {
 		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
-	}
-	if bootstrapTerminalErr != nil {
-		// The upstream connection was already invalidated and released in the terminal-failure
-		// branch above, so only the buffered payloads plus the in-stream error remain to emit.
-		out <- cliproxyexecutor.StreamChunk{Err: bootstrapTerminalErr}
-		close(out)
-		return &cliproxyexecutor.StreamResult{Headers: upstreamHeaders, Chunks: out}, nil
 	}
 	if immediateTerminal {
 		if sess != nil {

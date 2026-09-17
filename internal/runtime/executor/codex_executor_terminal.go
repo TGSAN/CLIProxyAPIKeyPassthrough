@@ -446,6 +446,16 @@ func newCodexBootstrapOverloadErr(body []byte) statusErr {
 	return newCodexStatusErr(http.StatusServiceUnavailable, body)
 }
 
+// newCodexEmptyStreamError reports an upstream response that produced no output at all. Because
+// nothing has been committed downstream, the attempt is replaceable: it fails with a retryable
+// bad-gateway status so the conductor rotates credentials and runs request-retry rounds, instead
+// of the request-scoped 408 which `isRequestInvalidError` treats as final and never retries.
+// Only use it while zero bytes have reached the client; a truncation after delivered output must
+// stay `codexIncompleteStreamError`, since retrying cannot un-send committed bytes.
+func newCodexEmptyStreamError() statusErr {
+	return statusErr{code: http.StatusBadGateway, msg: codexIncompleteStreamMessage}
+}
+
 // isCodexOverloadBootstrapFailure reports whether a terminal failure delivered inside an HTTP 200
 // stream is a transient capacity rejection that a different credential may be able to serve.
 // Only these failures justify replacing the whole attempt during bootstrap; every other terminal

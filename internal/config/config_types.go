@@ -151,10 +151,12 @@ type CodexConfig struct {
 	// StreamBootstrapBuffering holds back initial handshake events (response.created,
 	// response.in_progress and the websocket metadata frames) until the first generated event
 	// arrives. The upstream delivers server_is_overloaded rejections inside an HTTP 200 stream
-	// right after those handshake events instead of returning 503 on the wire, so buffering them
-	// keeps the downstream response headers uncommitted long enough to retry on another credential.
-	// Trade-off: the response headers are delayed until the upstream starts generating, which can
-	// trip client or reverse-proxy read timeouts. Default is false.
+	// right after those handshake events instead of returning 503 on the wire, and some
+	// compatible upstreams simply close or error the stream without any usable event.
+	// Buffering keeps the downstream response headers uncommitted long enough to fail the whole
+	// attempt synchronously: retryable failures rotate to another credential, request faults
+	// return their real status. Trade-off: the response headers are delayed until the upstream
+	// starts generating, which can trip client or reverse-proxy read timeouts. Default is false.
 	StreamBootstrapBuffering bool `yaml:"stream-bootstrap-buffering" json:"stream-bootstrap-buffering"`
 	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`

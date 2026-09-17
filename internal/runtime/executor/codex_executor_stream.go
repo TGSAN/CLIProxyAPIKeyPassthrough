@@ -147,10 +147,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	var initialChunks [][]byte
 	streamStarted := false
 	immediateTerminal := false
-	// bootstrapTerminalErr holds a non-overload terminal failure seen while buffering. It is
-	// delivered as an in-stream chunk after the buffered handshake so downstream behaviour stays
-	// identical to the unbuffered path instead of silently turning into a credential failover.
-	var bootstrapTerminalErr error
 
 	closeBootstrapBody := func() {
 		if errClose := httpResp.Body.Close(); errClose != nil {
@@ -192,8 +188,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered handshake events, failing over", len(bufferedChunks))
 						return nil, newCodexBootstrapOverloadErr(terminalBody)
 					}
-					bootstrapTerminalErr = streamErr
-					break
+					// Nothing has been committed downstream yet, so the failure returns
+					// synchronously with its classified status: retryable statuses let the
+					// conductor fail over to another credential, request faults still return
+					// straight to the client.
+					return nil, streamErr
 				}
 				if isCodexHandshakeMetadataEvent(eventType) {
 					isHandshake = true
@@ -238,7 +237,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			break
 		}
 
-		if !streamStarted && bootstrapTerminalErr == nil {
+		if !streamStarted {
 			closeBootstrapBody()
 			if errScan := scanner.Err(); errScan != nil {
 				// A cancelled downstream request must not be recorded as an upstream failure or
@@ -253,30 +252,19 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			streamErr := newCodexIncompleteStreamError()
+			streamErr := newCodexEmptyStreamError()
 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			reporter.PublishFailure(ctx, streamErr)
 			return nil, streamErr
 		}
 	}
 
-	chanCapacity := len(bufferedChunks) + len(initialChunks)
-	if bootstrapTerminalErr != nil {
-		chanCapacity++
-	}
-	out := make(chan cliproxyexecutor.StreamChunk, chanCapacity)
+	out := make(chan cliproxyexecutor.StreamChunk, len(bufferedChunks)+len(initialChunks))
 	for _, chunk := range bufferedChunks {
 		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
 	}
 	for _, chunk := range initialChunks {
 		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
-	}
-	if bootstrapTerminalErr != nil {
-		// Buffered handshake payloads are flushed first so the conductor observes a committed
-		// stream and delivers this failure in-stream, exactly as the unbuffered path would.
-		out <- cliproxyexecutor.StreamChunk{Err: bootstrapTerminalErr}
-		close(out)
-		return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 	}
 	if immediateTerminal {
 		closeBootstrapBody()
@@ -284,6 +272,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 	}
 
+	var streamedPayload bool
 	go func() {
 		defer close(out)
 		defer func() {
@@ -345,6 +334,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
+			if len(chunks) > 0 {
+				streamedPayload = true
+			}
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -362,7 +354,16 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 		}
-		streamErr := newCodexIncompleteStreamError()
+		// A stream that never emitted a payload left nothing committed downstream, so report
+		// it as a retryable empty response: the conductor's bootstrap read turns the leading
+		// error chunk into a credential rotation plus request-retry rounds. The request-scoped
+		// 408 was final (isRequestInvalidError) and surfaced to the client unretried. Once
+		// output escaped, retrying cannot un-send committed bytes, so mid-stream truncation
+		// keeps the in-stream incomplete error.
+		var streamErr error = newCodexIncompleteStreamError()
+		if !streamedPayload {
+			streamErr = newCodexEmptyStreamError()
+		}
 		helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 		reporter.PublishFailure(ctx, streamErr)
 		select {

@@ -126,31 +126,46 @@ func TestCodexExecutor_BootstrapBuffering_OverloadFailsAttemptWithoutLeakingHand
 	}
 }
 
-// A non-overload terminal failure must keep the original in-stream delivery semantics: the
-// buffered handshake is flushed first and the error arrives as a stream chunk, so the conductor
-// sees a committed stream and does not burn another credential on a request-level fault.
-func TestCodexExecutor_BootstrapBuffering_NonOverloadStaysInStream(t *testing.T) {
+// Any terminal failure seen while buffering must fail the whole attempt synchronously: nothing
+// has been committed downstream, so the conductor gets a chance to retry on another credential
+// (retryable statuses) or to return the real status to the client (request faults) instead of
+// burning the response as an already-committed SSE stream.
+func TestCodexExecutor_BootstrapBuffering_TerminalFailureFailsAttemptSynchronously(t *testing.T) {
 	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent, codexInvalidEvent)
 	defer server.Close()
 
 	req, opts := codexTestRequest()
 	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
 
-	if err != nil {
-		t.Fatalf("non-overload failure must not fail the attempt synchronously: %v", err)
+	if err == nil {
+		t.Fatal("expected the terminal failure to fail the attempt synchronously")
 	}
-	if result == nil {
-		t.Fatal("expected a stream result for in-stream error delivery")
+	if result != nil {
+		t.Fatal("expected nil result so no buffered handshake chunk can reach the client")
 	}
-	combined, streamErr := drainChunks(result)
-	if streamErr == nil {
-		t.Fatal("expected the invalid-request failure to arrive as an in-stream chunk error")
+	if got := statusCodeFromTestError(t, err); got != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want %d (request fault keeps its real status)", got, http.StatusBadRequest)
 	}
-	if !strings.Contains(combined, "response.created") {
-		t.Fatalf("buffered handshake must be flushed before the in-stream error: %s", combined)
+}
+
+// A stream that closes during bootstrap without any event (or only handshake events) is the
+// "no reply at all" case: the attempt must fail with a retryable status so the conductor rotates
+// credentials and runs request-retry rounds, rather than handing the client a contentless stream.
+func TestCodexExecutor_BootstrapBuffering_EmptyStreamFailsRetryable(t *testing.T) {
+	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent)
+	defer server.Close()
+
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+
+	if err == nil {
+		t.Fatal("expected the empty bootstrap stream to fail the attempt synchronously")
 	}
-	if got := statusCodeFromTestError(t, streamErr); got != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want %d", got, http.StatusBadRequest)
+	if result != nil {
+		t.Fatal("expected nil result so no buffered handshake chunk can reach the client")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusBadGateway {
+		t.Fatalf("status code = %d, want %d (retryable)", got, http.StatusBadGateway)
 	}
 }
 
@@ -296,25 +311,44 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_PrivateHandshakeFramesDoNotE
 	}
 }
 
-func TestCodexWebsocketsExecutor_BootstrapBuffering_NonOverloadStaysInStream(t *testing.T) {
+// A non-overload terminal failure also fails the websocket attempt synchronously while buffering:
+// nothing has been committed downstream, so retryable statuses can rotate credentials and request
+// faults still surface their real status to the client.
+func TestCodexWebsocketsExecutor_BootstrapBuffering_TerminalFailureFailsAttemptSynchronously(t *testing.T) {
 	server := codexWebsocketServer(t, codexCreatedEvent, codexInProgressEvent, codexInvalidEvent)
 	defer server.Close()
 
 	req, opts := codexWebsocketRequest()
 	result, err := NewCodexWebsocketsExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
 
-	if err != nil {
-		t.Fatalf("non-overload failure must not fail the attempt synchronously: %v", err)
+	if err == nil {
+		t.Fatal("expected the terminal failure to fail the attempt synchronously")
 	}
-	if result == nil {
-		t.Fatal("expected a stream result for in-stream error delivery")
+	if result != nil {
+		t.Fatal("expected nil result so no buffered handshake frame can reach the client")
 	}
-	combined, streamErr := drainChunks(result)
-	if streamErr == nil {
-		t.Fatal("expected the invalid-request failure to arrive as an in-stream chunk error")
+	if got := statusCodeFromTestError(t, err); got != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want %d (request fault keeps its real status)", got, http.StatusBadRequest)
 	}
-	if !strings.Contains(combined, "response.created") {
-		t.Fatalf("buffered handshake must be flushed before the in-stream error: %s", combined)
+}
+
+// A websocket stream that closes during bootstrap without usable frames must fail with a
+// retryable status so the conductor rotates credentials instead of delivering an empty reply.
+func TestCodexWebsocketsExecutor_BootstrapBuffering_EmptyStreamFailsRetryable(t *testing.T) {
+	server := codexWebsocketServer(t, codexCreatedEvent, codexInProgressEvent)
+	defer server.Close()
+
+	req, opts := codexWebsocketRequest()
+	result, err := NewCodexWebsocketsExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+
+	if err == nil {
+		t.Fatal("expected the empty bootstrap stream to fail the attempt synchronously")
+	}
+	if result != nil {
+		t.Fatal("expected nil result so no buffered handshake frame can reach the client")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusBadGateway {
+		t.Fatalf("status code = %d, want %d (retryable)", got, http.StatusBadGateway)
 	}
 }
 
@@ -464,15 +498,19 @@ func TestCodexWebsocketsExecutor_BootstrapOverload_DoesNotNotifyDownstreamDiscon
 	}
 }
 
-// A non-overload terminal failure is delivered in-stream and genuinely ends the session, so it
-// must keep signalling the disconnect exactly as it did before buffering existed.
-func TestCodexWebsocketsExecutor_BootstrapNonOverload_StillNotifiesDownstreamDisconnect(t *testing.T) {
+// Every bootstrap terminal failure replaces the whole attempt (the conductor retries on another
+// credential for retryable statuses and returns request faults itself), so none of them may
+// signal a downstream disconnect before that decision is made.
+func TestCodexWebsocketsExecutor_BootstrapNonOverload_DoesNotNotifyDownstreamDisconnect(t *testing.T) {
 	notified, err := executeWebsocketStreamInSession(t, codexCreatedEvent, codexInProgressEvent, codexInvalidEvent)
 
-	if err != nil {
-		t.Fatalf("non-overload failures stay in-stream, got err = %v", err)
+	if err == nil {
+		t.Fatal("expected the terminal failure to fail the attempt synchronously")
 	}
-	if !notified {
-		t.Fatal("a terminal failure that is delivered in-stream must still signal the downstream disconnect")
+	if got := statusCodeFromTestError(t, err); got != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want %d", got, http.StatusBadRequest)
+	}
+	if notified {
+		t.Fatal("bootstrap terminal failures must not signal a downstream disconnect: signalling closes the client connection before the conductor can retry or report the fault")
 	}
 }

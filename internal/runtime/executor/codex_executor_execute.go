@@ -193,7 +193,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 	}
-	err = newCodexIncompleteStreamError()
+	// Nothing reached the client, so the whole attempt is replaceable: a retryable empty-stream
+	// error lets the conductor run request-retry rounds. The old request-scoped 408 was treated
+	// as final by isRequestInvalidError and returned to the client with zero retries.
+	err = newCodexEmptyStreamError()
 	return resp, err
 }
 

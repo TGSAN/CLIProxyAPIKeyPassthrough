@@ -180,7 +180,10 @@ func TestCodexExecutorExecuteExplicitTerminalFailureIsNotRequestScoped(t *testin
 	assertNotRequestScopedTestError(t, err)
 }
 
-func TestCodexExecutorExecuteMissingCompletionIsRequestScoped(t *testing.T) {
+// A non-streaming response that never delivers the terminal event produced no output at all, so
+// the attempt must fail with a retryable status: the old request-scoped 408 was final per
+// isRequestInvalidError and returned to the client with zero credential rotation or retries.
+func TestCodexExecutorExecuteMissingCompletionIsRetryable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\"}}\n\n"))
@@ -203,10 +206,10 @@ func TestCodexExecutorExecuteMissingCompletionIsRequestScoped(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing-completion error, got nil")
 	}
-	if got := statusCodeFromTestError(t, err); got != http.StatusRequestTimeout {
-		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, err)
+	if got := statusCodeFromTestError(t, err); got != http.StatusBadGateway {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusBadGateway, err)
 	}
-	assertRequestScopedTestError(t, err)
+	assertNotRequestScopedTestError(t, err)
 }
 
 func TestCodexExecutorExecuteStreamMissingCompletionIsRequestScoped(t *testing.T) {
@@ -246,6 +249,56 @@ func TestCodexExecutorExecuteStreamMissingCompletionIsRequestScoped(t *testing.T
 		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, streamErr)
 	}
 	assertRequestScopedTestError(t, streamErr)
+}
+
+// An HTTP 200 stream that closes without delivering any event must fail with a retryable 502
+// error chunk: the conductor reads the stream bootstrap itself, turns the leading error into a
+// credential rotation plus request-retry rounds, and only surfaces the final status if every
+// attempt stays empty. The old request-scoped 408 was final and reached the client unretried.
+func TestCodexExecutorExecuteStreamEmptyResponseIsRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var payloadChunks int
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			continue
+		}
+		if len(chunk.Payload) > 0 {
+			payloadChunks++
+		}
+	}
+	if payloadChunks != 0 {
+		t.Fatalf("empty upstream must not deliver payloads, got %d chunks", payloadChunks)
+	}
+	if streamErr == nil {
+		t.Fatal("expected empty-stream error, got nil")
+	}
+	if got := statusCodeFromTestError(t, streamErr); got != http.StatusBadGateway {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusBadGateway, streamErr)
+	}
+	assertNotRequestScopedTestError(t, streamErr)
 }
 
 func TestCodexExecutorExecuteStreamExplicitTerminalFailureIsNotSuccessful(t *testing.T) {
@@ -338,13 +391,18 @@ func TestCodexAutoExecutorHTTPFallbackForwardsSequentialCutoffReasoningSummaryDe
 	}
 }
 
-func TestCodexExecutorTransportFailureBeforeTerminalIsRequestScoped(t *testing.T) {
+// A transport failure before the terminal event is only request-scoped once output has reached
+// the client (streaming: retrying cannot un-send committed bytes). Non-streaming responses are
+// fully buffered, so a missing completion produced nothing and must fail retryable with 502.
+func TestCodexExecutorTransportFailureBeforeTerminal(t *testing.T) {
 	tests := []struct {
-		name   string
-		stream bool
+		name       string
+		stream     bool
+		wantStatus int
+		scoped     bool
 	}{
-		{name: "non-streaming"},
-		{name: "streaming", stream: true},
+		{name: "non-streaming", wantStatus: http.StatusBadGateway},
+		{name: "streaming", stream: true, wantStatus: http.StatusRequestTimeout, scoped: true},
 	}
 
 	for _, tc := range tests {
@@ -384,10 +442,14 @@ func TestCodexExecutorTransportFailureBeforeTerminalIsRequestScoped(t *testing.T
 			if terminalErr == nil {
 				t.Fatal("expected transport failure before terminal event")
 			}
-			if got := statusCodeFromTestError(t, terminalErr); got != http.StatusRequestTimeout {
-				t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, terminalErr)
+			if got := statusCodeFromTestError(t, terminalErr); got != tc.wantStatus {
+				t.Fatalf("status code = %d, want %d; err=%v", got, tc.wantStatus, terminalErr)
 			}
-			assertRequestScopedTestError(t, terminalErr)
+			if tc.scoped {
+				assertRequestScopedTestError(t, terminalErr)
+			} else {
+				assertNotRequestScopedTestError(t, terminalErr)
+			}
 		})
 	}
 }
