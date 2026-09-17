@@ -272,7 +272,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 	}
 
-	var streamedPayload bool
+	// The bootstrap already released chunks downstream when it exits with a first event, so
+	// those bytes count as committed before the goroutine reads another line.
+	streamedPayload := len(bufferedChunks)+len(initialChunks) > 0
 	go func() {
 		defer close(out)
 		defer func() {
