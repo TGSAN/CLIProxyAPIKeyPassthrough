@@ -99,11 +99,13 @@ func mapCodexWebsocketReadError(err error) error {
 	return err
 }
 
-func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) []byte {
-	if !isCodexResponsesLiteRequest(body, headers) {
-		return body
+func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header, auth *cliproxyauth.Auth, clientPayload []byte) []byte {
+	if isCodexResponsesLiteRequest(body, headers) {
+		return helps.SetBoolIfDifferent(body, "parallel_tool_calls", false)
 	}
-	body = helps.SetBoolIfDifferent(body, "parallel_tool_calls", false)
+	if codexAuthUsesAPIKey(auth) {
+		return ensureCodexAPIKeyParallelToolCalls(body, clientPayload)
+	}
 	return body
 }
 

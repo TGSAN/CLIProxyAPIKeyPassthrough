@@ -471,12 +471,27 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 	return body
 }
 
-func normalizeCodexParallelToolCalls(body []byte, headers http.Header) []byte {
+func normalizeCodexParallelToolCalls(body []byte, headers http.Header, auth *cliproxyauth.Auth, clientPayload []byte) []byte {
 	if isCodexResponsesLiteRequest(body, headers) {
 		body = helps.SetBoolIfDifferent(body, "parallel_tool_calls", false)
 		return body
 	}
+	if codexAuthUsesAPIKey(auth) {
+		return ensureCodexAPIKeyParallelToolCalls(body, clientPayload)
+	}
 	return normalizeCodexParallelToolCallsForTools(body)
+}
+
+// ensureCodexAPIKeyParallelToolCalls pins parallel_tool_calls for API-key
+// upstreams that reject requests omitting it. Translators force the field to
+// true, so the client's original payload is the only source of intent:
+// explicit client value wins, absent client value defaults to false.
+func ensureCodexAPIKeyParallelToolCalls(body []byte, clientPayload []byte) []byte {
+	value := false
+	if client := gjson.GetBytes(clientPayload, "parallel_tool_calls"); client.Exists() {
+		value = client.Bool()
+	}
+	return helps.SetBoolIfDifferent(body, "parallel_tool_calls", value)
 }
 
 func normalizeCodexParallelToolCallsForTools(body []byte) []byte {
